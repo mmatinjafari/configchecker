@@ -61,7 +61,7 @@ class RollingStats:
         # Raw score
         raw_score = (loss * 10000) + (jitter * 5) + (lat * 0.5)
         
-        if count < 5:
+        if count < 2:
             return 999999 + raw_score, loss, lat, jitter, count
             
         # Exponential Smoothing for Rank Stability
@@ -91,15 +91,35 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
 
     async def pinger(config: ProxyConfig):
         stat = stats_map[config.raw_link]
-        while running:
-            # Dead Config Check (10 minutes silence)
-            if time.time() - stat.last_success_time > 600:
-                await asyncio.sleep(600)
-            
-            async with sem:
-                is_up, lat, _ = await ProxyChecker.check_tcp_connect(config, timeout=2.0, bind_addr=bind_addr)
-            stat.add(is_up, lat)
-            await asyncio.sleep(1 + (id(config) % 50) / 100.0) 
+        try:
+            while running:
+                # Dead Config Check (10 minutes silence)
+                if time.time() - stat.last_success_time > 600:
+                    await asyncio.sleep(600)
+                
+                try:
+                    # Debug: Log start
+                    with open("debug_pinger.log", "a") as f: f.write(f"checking {config.remarks}\n")
+                    
+                    async with sem:
+                        is_up, lat, _ = await ProxyChecker.check_tcp_connect(config, timeout=2.0, bind_addr=bind_addr)
+                    
+                    stat.add(is_up, lat)
+                    
+                    # Debug: Log end
+                    with open("debug_pinger.log", "a") as f: f.write(f"done {config.remarks} up={is_up} lat={lat:.2f}ms\n")
+                    
+                except Exception as e:
+                    # Catch pinger crash
+                    with open("debug_pinger.log", "a") as f: 
+                        f.write(f"CRASH {config.remarks}: {e}\n")
+                    # Sleep to avoid busy loop if crash is persistent
+                    await asyncio.sleep(1)
+
+                await asyncio.sleep(0.2 + (id(config) % 20) / 100.0) # Faster cycle 
+        except Exception as outer_e:
+             with open("debug_pinger.log", "a") as f: 
+                 f.write(f"FATAL PINGER {config.remarks}: {outer_e}\n") 
 
     pinger_tasks = [asyncio.create_task(pinger(c)) for c in configs]
     
@@ -111,40 +131,56 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
         snapshots = []
         for stat in stats_map.values():
             score, loss, lat, jitter, count = stat.get_score()
-            snapshots.append((score, loss, lat, jitter, stat.config))
+            snapshots.append((score, loss, lat, jitter, stat.config, count))
 
         snapshots.sort(key=lambda x: x[0])
 
         # --- Network Health Logic ---
-        top_5_stats = [s for s in snapshots[:5] if s[1] < 100 and s[0] < 900000]
+        # Warming up configs have score > 900000
+        # Valid established configs have score < 900000
         
-        avg_loss = 100
-        avg_jitter = 0
-        if top_5_stats:
-            avg_loss = sum(s[1] for s in top_5_stats) / len(top_5_stats)
-            avg_jitter = sum(s[3] for s in top_5_stats) / len(top_5_stats)
-
+        established_stats = [s for s in snapshots if s[0] < 900000 and s[1] < 100]
+        warmup_stats = [s for s in snapshots if s[0] >= 900000 and s[1] < 100]
+        
         network_status = "CRITICAL"
         style = "bold red"
         details = "Most configs are unreachable"
-
-        if avg_loss < 10:
-            if avg_jitter < 50:
-                network_status = "EXCELLENT"
-                style = "bold green"
-                details = "Network is stable and low jitter"
-            elif avg_jitter < 200:
-                network_status = "GOOD"
-                style = "bold green"
-                details = "Usable, slight jitter detected"
+        
+        target_stats = established_stats[:5]
+        
+        if not target_stats:
+            # Fallback to warmup stats if we are just starting
+            if warmup_stats:
+                network_status = "CALCULATING"
+                style = "bold blue"
+                avg_count = sum(s[5] for s in warmup_stats[:5]) / 5
+                details = f"Gathering data... (Avg Samples: {avg_count:.1f}/2.0)"
+                target_stats = warmup_stats[:5] # Use them for avg calculation anyway
             else:
-                network_status = "UNSTABLE"
+                 # Truly critical, nothing is up
+                 pass
+        else:
+             # We have established stats
+             avg_loss = sum(s[1] for s in target_stats) / len(target_stats)
+             avg_jitter = sum(s[3] for s in target_stats) / len(target_stats)
+
+             if avg_loss < 10:
+                if avg_jitter < 50:
+                    network_status = "EXCELLENT"
+                    style = "bold green"
+                    details = "Network is stable and low jitter"
+                elif avg_jitter < 200:
+                    network_status = "GOOD"
+                    style = "bold green"
+                    details = "Usable, slight jitter detected"
+                else:
+                    network_status = "UNSTABLE"
+                    style = "bold yellow"
+                    details = "High jitter detected (Packet variance)"
+             elif avg_loss < 50:
+                network_status = "DEGRADED"
                 style = "bold yellow"
-                details = "High jitter detected (Packet variance)"
-        elif avg_loss < 50:
-            network_status = "DEGRADED"
-            style = "bold yellow"
-            details = "Significant packet loss detected"
+                details = "Significant packet loss detected"
 
         header_panel = Panel(
             Align.center(
@@ -177,6 +213,8 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
         else:
             footer_content = Text("No verified stable configs found yet...", style="red")
 
+        footer_panel = Panel(
+            Align.center(footer_content),
             title="🏆 Sticky Best Config (Verified)",
             border_style=footer_style
         )
@@ -191,7 +229,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
         table.add_column("Remarks", justify="left", ratio=1, no_wrap=True, overflow="ellipsis") 
 
         count = 0
-        for i, (score, loss, lat, jitter, config) in enumerate(snapshots): 
+        for i, (score, loss, lat, jitter, config, count) in enumerate(snapshots, 1): 
              # Visualization Logic: Show top 25, but stop if score gets too bad unless it's top 10
              if i > 25: break
              
