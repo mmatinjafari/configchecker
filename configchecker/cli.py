@@ -19,18 +19,37 @@ async def async_main():
     except Exception as e:
         print(f"Warning: Could not increase file limit: {e}")
 
-    default_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs.txt")
+    # Path resolution:
+    # 1. User provided --file
+    # 2. 'configs.txt' in current working directory
+    # 3. 'configs.txt' in package directory (fallback/sample)
+    
+    package_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs.txt")
+    cwd_config_path = os.path.join(os.getcwd(), "configs.txt")
+    
+    default_path = cwd_config_path if os.path.exists(cwd_config_path) else package_config_path
+
     parser = argparse.ArgumentParser(description="V2Ray/Proxy Stability Checker")
-    parser.add_argument("--file", type=str, default=default_config_path, help="Path to config file")
+    parser.add_argument("--file", type=str, default=None, help="Path to config file (default: ./configs.txt or package sample)")
     parser.add_argument("--mode", type=str, default="quick", choices=["quick", "stable", "realtime"], help="Mode: quick, stable (duration), or realtime (live monitor)")
     parser.add_argument("--duration", type=int, default=30, help="Duration for stability check in seconds")
     parser.add_argument("--concurrency", type=int, default=200, help="Number of concurrent checks")
     parser.add_argument("--bind-ip", type=str, default=None, help="Local IP to bind to (bypass VPN). Default: Auto-detect")
     args = parser.parse_args()
 
-    print(f"Reading configs from {args.file}...")
+    config_file = args.file
+    if config_file is None:
+         # Re-evaluate default because CWD might change or we want explicit fallback logic
+         if os.path.exists(cwd_config_path):
+             config_file = cwd_config_path
+             print(f"Using configs from current directory: {config_file}")
+         else:
+             config_file = package_config_path
+             print(f"Using default package configs: {config_file}")
+
+    print(f"Reading configs from {config_file}...")
     try:
-        configs = ConfigParser.parse_file(args.file)
+        configs = ConfigParser.parse_file(config_file)
     except Exception as e:
         print(f"Error reading file: {e}")
         return
