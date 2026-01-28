@@ -1,0 +1,19 @@
+# User Data
+configs.txt
+
+# Python Environment
+venv/
+__pycache__/
+*.py[cod]
+*.so
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs and Binaries
+*.log
+bin/
+
+# OS specific
+.DS_Store

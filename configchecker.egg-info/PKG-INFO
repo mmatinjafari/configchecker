@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: configchecker
+Version: 1.0.0
+Summary: A high-performance V2Ray/Proxy stability checker.
+Author: Marczo
+Requires-Python: >=3.8
+Requires-Dist: aiohttp>=3.9.1
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: tqdm>=4.66.1
+Requires-Dist: rich>=13.7.0
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

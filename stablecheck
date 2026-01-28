@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# Resolve the directory where this script resides, handling symlinks
+SOURCE=${BASH_SOURCE[0]}
+while [ -L "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symlink
+  DIR=$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )
+  SOURCE=$(readlink "$SOURCE")
+  [[ $SOURCE != /* ]] && SOURCE=$DIR/$SOURCE # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+done
+PROJECT_DIR=$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )
+
+VENV_ACTIVATE="$PROJECT_DIR/venv/bin/activate"
+MAIN_SCRIPT="$PROJECT_DIR/main.py"
+
+# Function to activate venv and run
+run_app() {
+    if [ -f "$VENV_ACTIVATE" ]; then
+        source "$VENV_ACTIVATE"
+        python3 "$MAIN_SCRIPT" "$@"
+    else
+        echo "Error: Virtual environment not found at $VENV_ACTIVATE"
+        echo "Please run 'python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt' in the project root first."
+        exit 1
+    fi
+}
+
+run_app "$@"

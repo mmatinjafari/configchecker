@@ -1,0 +1,2 @@
+[console_scripts]
+configchecker = configchecker.cli:main
