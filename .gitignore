@@ -17,3 +17,4 @@ bin/
 
 # OS specific
 .DS_Store
+configs_real.backup

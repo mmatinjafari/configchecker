@@ -16,9 +16,12 @@ class RollingStats:
         self.history = deque(maxlen=maxlen) # Stores (is_up, latency)
         self.last_jitter = 0.0
         self.smoothed_score = None
+        self.last_success_time = time.time() # Start assuming alive to give it a chance
     
     def add(self, is_up, latency):
         self.history.append((is_up, latency))
+        if is_up:
+            self.last_success_time = time.time()
         
     def get_metrics(self):
         if not self.history:
@@ -29,6 +32,10 @@ class RollingStats:
         loss = (failures / total) * 100
         
         valid_latencies = [lat for up, lat in self.history if up]
+        
+        # Check for DEAD status (10 mins without success)
+        # Note: We handle throttling in the pinger loop, but here we can return a flag if needed.
+        # For metrics display, we treat it as 100% loss essentially.
         
         if len(valid_latencies) < 2:
             return loss, 0.0, 0.0, total
@@ -44,6 +51,12 @@ class RollingStats:
         
     def get_score(self):
         loss, lat, jitter, count = self.get_metrics()
+        
+        # Mark as effectively dead for sorting if long inactivity
+        time_since_success = time.time() - self.last_success_time
+        if time_since_success > 600:
+             loss = 100.0 # Force 100% loss view for sorting
+             return 9999999 + time_since_success, loss, lat, jitter, count # Push to bottom
         
         # Raw score
         raw_score = (loss * 10000) + (jitter * 5) + (lat * 0.5)
@@ -77,6 +90,13 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
     async def pinger(config: ProxyConfig):
         stat = stats_map[config.raw_link]
         while running:
+            # Dead Config Check (10 minutes silence)
+            if time.time() - stat.last_success_time > 600:
+                # If dead for 10 mins, sleep for 10 mins (600s) to save bandwidth
+                # Essentially stopping active checks but keeping it alive for later retry
+                await asyncio.sleep(600)
+                # After waking up, we do ONE check to see if it's back.
+            
             async with sem:
                 is_up, lat, _ = await ProxyChecker.check_tcp_connect(config, timeout=2.0, bind_addr=bind_addr)
             stat.add(is_up, lat)
