@@ -81,6 +81,8 @@ from rich.console import Group, Console
 from rich.style import Style
 
 async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind_addr: str = None):
+    from .verifier import XrayVerifier # Lazy import to avoid circular dependency if any
+    
     console = Console()
     stats_map = {c.raw_link: RollingStats(c) for c in configs}
     sem = asyncio.Semaphore(concurrency)
@@ -92,10 +94,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
         while running:
             # Dead Config Check (10 minutes silence)
             if time.time() - stat.last_success_time > 600:
-                # If dead for 10 mins, sleep for 10 mins (600s) to save bandwidth
-                # Essentially stopping active checks but keeping it alive for later retry
                 await asyncio.sleep(600)
-                # After waking up, we do ONE check to see if it's back.
             
             async with sem:
                 is_up, lat, _ = await ProxyChecker.check_tcp_connect(config, timeout=2.0, bind_addr=bind_addr)
@@ -104,11 +103,11 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
 
     pinger_tasks = [asyncio.create_task(pinger(c)) for c in configs]
     
-    # Tracking for "Sticky Best Config"
     monitor_start_time = time.time()
     recommended_config: ProxyConfig = None
+    verification_status = "" 
 
-    def generate_dashboard():
+    def generate_dashboard(rec_config, verify_status):
         snapshots = []
         for stat in stats_map.values():
             score, loss, lat, jitter, count = stat.get_score()
@@ -119,26 +118,33 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
         # --- Network Health Logic ---
         top_5_stats = [s for s in snapshots[:5] if s[1] < 100 and s[0] < 900000]
         
-        network_status = "CALCULATING..."
-        style = "white on black"
-        
+        avg_loss = 100
+        avg_jitter = 0
         if top_5_stats:
-            avg_jitter = statistics.mean(s[3] for s in top_5_stats)
-            avg_loss = statistics.mean(s[1] for s in top_5_stats)
-            
-            if avg_loss < 2 and avg_jitter < 50:
-                network_status = "EXCELLENT NETWORK"
-                style = "black on green"
-            elif avg_loss < 10 and avg_jitter < 200:
-                network_status = "MODERATE NETWORK (Some Jitter)"
-                style = "black on yellow"
+            avg_loss = sum(s[1] for s in top_5_stats) / len(top_5_stats)
+            avg_jitter = sum(s[3] for s in top_5_stats) / len(top_5_stats)
+
+        network_status = "CRITICAL"
+        style = "bold red"
+        details = "Most configs are unreachable"
+
+        if avg_loss < 10:
+            if avg_jitter < 50:
+                network_status = "EXCELLENT"
+                style = "bold green"
+                details = "Network is stable and low jitter"
+            elif avg_jitter < 200:
+                network_status = "GOOD"
+                style = "bold green"
+                details = "Usable, slight jitter detected"
             else:
-                network_status = "POOR NETWORK / ISP ISSUES"
-                style = "black on red"
-                
-            details = f"Top 5 Avg: Loss={avg_loss:.1f}% | Jitter={avg_jitter:.1f}ms"
-        else:
-            details = "Waiting for data..."
+                network_status = "UNSTABLE"
+                style = "bold yellow"
+                details = "High jitter detected (Packet variance)"
+        elif avg_loss < 50:
+            network_status = "DEGRADED"
+            style = "bold yellow"
+            details = "Significant packet loss detected"
 
         header_panel = Panel(
             Align.center(
@@ -151,96 +157,119 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
             border_style="blue"
         )
         
-        # --- Sticky Best Config Footer ---
-        nonlocal recommended_config
+        # --- Footer Logic (Display Only) ---
         elapsed = time.time() - monitor_start_time
         footer_content = None
         footer_style = "blue"
         
         if elapsed < 60:
             footer_content = Text(f"⏳ Analyzing stability... Best config will appear in {60 - int(elapsed)}s", style="dim white")
+        elif verify_status:
+             footer_content = Text(f"{verify_status}", style="bold yellow")
+        elif rec_config:
+            footer_content = Group(
+                Text(f"🏆 Best Stable Config: {rec_config.remarks}", style="bold cyan"),
+                Text(f"Protocol: {rec_config.protocol} | Addr: {rec_config.address}", style="cyan"),
+                Text(f"Raw Link (Copy):", style="dim white"),
+                Text(f"{rec_config.raw_link}", style="bold white on blue")
+            )
+            footer_style = "green"
         else:
-            # Determine Rank of current recommended
-            current_rank = 999
-            if recommended_config:
-                # Find current rank of recommended config
-                for idx, snap in enumerate(snapshots):
-                    if snap[4].raw_link == recommended_config.raw_link:
-                        current_rank = idx + 1
-                        break
-            
-            # Switch Logic: If no recommendation OR current recommendation fell below rank 10
-            if recommended_config is None or current_rank > 10:
-                # Pick new #1 (must be somewhat decent, e.g. loss < 100)
-                if snapshots and snapshots[0][1] < 100:
-                    recommended_config = snapshots[0][4]
-                    current_rank = 1
-            
-            if recommended_config:
-                 rec_text = Text(
-                     f"🌟 RECOMMENDED: [ {recommended_config.protocol.upper()} ] {recommended_config.remarks} (Rank #{current_rank})", 
-                     style="bold white on green", justify="center"
-                 )
-                 # Add raw link for copying, allow folding
-                 link_text = Text(recommended_config.raw_link, style="dim cyan on black", justify="center")
-                 
-                 footer_content = Group(rec_text, Text(""), link_text) # Spacer in between
-            else:
-                 footer_content = Text("No stable configs found yet...", style="red")
+            footer_content = Text("No verified stable configs found yet...", style="red")
 
-        footer = Panel(
-            Align.center(footer_content),
-            title="🏆 Best Stable Config",
-            border_style="green"
+            title="🏆 Sticky Best Config (Verified)",
+            border_style=footer_style
         )
 
-        # --- Table Logic ---
-        table = Table(expand=True, border_style="dim")
-        table.add_column("Rank", justify="right", style="cyan", no_wrap=True, width=4)
-        table.add_column("Score", justify="right", style="magenta", width=8)
-        table.add_column("Loss %", justify="right", style="red", width=8)
-        table.add_column("Latency", justify="right", style="green", width=10)
-        table.add_column("Jitter", justify="right", style="yellow", width=10)
-        table.add_column("Protocol", style="blue", width=8)
-        # Fix Remarks width to prevent UI jitter
-        table.add_column("Remarks", style="white", width=50, no_wrap=True, overflow="ellipsis")
+        table = Table(expand=True, border_style="dim white")
+        table.add_column("Rank", justify="right", width=8)
+        table.add_column("Score", justify="right", width=15)
+        table.add_column("Loss %", justify="right", width=15)
+        table.add_column("Latency", justify="right", width=18)
+        table.add_column("Jitter", justify="right", width=18)
+        table.add_column("Protocol", justify="left", width=15)
+        table.add_column("Remarks", justify="left", ratio=1, no_wrap=True, overflow="ellipsis") 
 
         count = 0
-        for i, (score, loss, lat, jitter, config) in enumerate(snapshots[:30], 1): 
-             if loss < 100 or i < 15:
-                proto_style = "blue"
-                if config.protocol == "vmess": proto_style = "magenta"
-                elif config.protocol == "vless": proto_style = "cyan"
-                elif config.protocol == "ss": proto_style = "green"
-                elif config.protocol == "trojan": proto_style = "yellow"
-
-                # Mark active config
-                remark = config.remarks
-                # Highlight recommended if visible
-                if recommended_config and config.raw_link == recommended_config.raw_link:
-                     remark = f"[bold green]>> {remark} <<[/]"
-
-                table.add_row(
-                    f"#{i}",
-                    f"{score:.1f}",
-                    f"{loss:.1f}%",
-                    f"{lat:.0f}ms",
-                    f"{jitter:.0f}ms",
-                    f"[{proto_style}]{config.protocol}[/]",
-                    remark
-                )
-                count += 1
-                if count >= 30: break 
-        
-        return Group(header_panel, table, footer)
-
-    # Main Loop
-    try:
-        with Live(generate_dashboard(), refresh_per_second=2, console=console, screen=True) as live:
-            while True:
-                live.update(generate_dashboard())
-                await asyncio.sleep(1) 
+        for i, (score, loss, lat, jitter, config) in enumerate(snapshots): 
+             # Visualization Logic: Show top 25, but stop if score gets too bad unless it's top 10
+             if i > 25: break
+             
+             row_style = ""
+             if config == rec_config:
+                row_style = "bold green"
+             elif loss >= 100:
+                row_style = "dim red"
             
+             loss_str = f"{loss:.1f}%"
+             if loss == 100 and score > 9000000:
+                 loss_str = "DEAD" 
+            
+             table.add_row(
+                f"#{i}", 
+                f"{score:.1f}", 
+                loss_str, 
+                f"{lat:.0f}ms", 
+                f"{jitter:.0f}ms", 
+                config.protocol, 
+                config.remarks,
+                style=row_style
+             )
+             count += 1
+        
+        return Group(header_panel, table, footer_panel)
+
+    try:
+        # Initial Render
+        with Live(generate_dashboard(None, ""), refresh_per_second=4, screen=True, auto_refresh=False) as live:
+            while running:
+                elapsed = time.time() - monitor_start_time
+                
+                # --- Verification Logic (Runs every loop but throttled by flow) ---
+                if elapsed >= 60:
+                    current_snapshots = []
+                    for stat in stats_map.values():
+                        current_snapshots.append((*stat.get_score(), stat.config))
+                    current_snapshots.sort(key=lambda x: x[0])
+                    
+                    # Check if we need to switch
+                    keep_current = False
+                    if recommended_config:
+                        rank = next((i for i, s in enumerate(current_snapshots) if s[5] == recommended_config), -1)
+                        if rank != -1 and rank <= 10:
+                            keep_current = True
+                    
+                    if not keep_current:
+                        recommended_config = None 
+                        verification_status = ""
+                        
+                        # Find Top 3 Alive candidates
+                        candidates = [s[5] for s in current_snapshots if s[1] < 100][:3]
+                        
+                        found_new = False
+                        for cand in candidates:
+                            # Update UI to show we are verifying
+                            verification_status = f"🔍 Verifying: {cand.protocol.upper()} {cand.remarks[:20]}..."
+                            live.update(generate_dashboard(recommended_config, verification_status))
+                            
+                            # Verify
+                            is_valid = await XrayVerifier.verify_config(cand)
+                            if is_valid:
+                                recommended_config = cand
+                                verification_status = ""
+                                found_new = True
+                                break
+                            else:
+                                # Failed verification, try next
+                                pass
+                        
+                        if not found_new and not recommended_config:
+                             verification_status = "Top configs failed verification."
+
+                # Update UI
+                live.update(generate_dashboard(recommended_config, verification_status))
+                await asyncio.sleep(0.5) # Refresh rate limit logic
+                
     except asyncio.CancelledError:
         pass
     except KeyboardInterrupt:
