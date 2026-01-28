@@ -102,12 +102,14 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
                     with open("debug_pinger.log", "a") as f: f.write(f"checking {config.remarks}\n")
                     
                     async with sem:
-                        is_up, lat, _ = await ProxyChecker.check_tcp_connect(config, timeout=2.0, bind_addr=bind_addr)
+                        is_up, lat, err = await ProxyChecker.check_tcp_connect(config, timeout=2.0, bind_addr=bind_addr)
                     
                     stat.add(is_up, lat)
                     
                     # Debug: Log end
-                    with open("debug_pinger.log", "a") as f: f.write(f"done {config.remarks} up={is_up} lat={lat:.2f}ms\n")
+                    failures = sum(1 for up, _ in stat.history if not up)
+                    with open("debug_pinger.log", "a") as f: 
+                        f.write(f"done {config.remarks} up={is_up} err={err} hist={len(stat.history)} fails={failures}\n")
                     
                 except Exception as e:
                     # Catch pinger crash
@@ -140,47 +142,67 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
         # Valid established configs have score < 900000
         
         established_stats = [s for s in snapshots if s[0] < 900000 and s[1] < 100]
-        warmup_stats = [s for s in snapshots if s[0] >= 900000 and s[1] < 100]
+        warmup_stats = [s for s in snapshots if s[0] >= 900000 and s[1] < 100 and s[5] > 0]
         
         network_status = "CRITICAL"
         style = "bold red"
         details = "Most configs are unreachable"
         
         target_stats = established_stats[:5]
+        is_warmup = False
         
         if not target_stats:
-            # Fallback to warmup stats if we are just starting
             if warmup_stats:
-                network_status = "CALCULATING"
-                style = "bold blue"
-                avg_count = sum(s[5] for s in warmup_stats[:5]) / 5
-                details = f"Gathering data... (Avg Samples: {avg_count:.1f}/2.0)"
-                target_stats = warmup_stats[:5] # Use them for avg calculation anyway
+                target_stats = warmup_stats[:5]
+                is_warmup = True
             else:
                  # Truly critical, nothing is up
                  pass
-        else:
-             # We have established stats
+        
+        if target_stats:
              avg_loss = sum(s[1] for s in target_stats) / len(target_stats)
              avg_jitter = sum(s[3] for s in target_stats) / len(target_stats)
-
-             if avg_loss < 10:
-                if avg_jitter < 50:
-                    network_status = "EXCELLENT"
-                    style = "bold green"
-                    details = "Network is stable and low jitter"
-                elif avg_jitter < 200:
-                    network_status = "GOOD"
-                    style = "bold green"
-                    details = "Usable, slight jitter detected"
-                else:
-                    network_status = "UNSTABLE"
+             
+             if is_warmup:
+                 network_status = "CALCULATING"
+                 style = "bold blue"
+                 # Progress Bar Logic
+                 # Avg samples of top 5
+                 avg_count = sum(s[5] for s in target_stats) / len(target_stats)
+                 
+                 # Debug: Log anomaly
+                 if avg_count == 0:
+                     with open("debug_pinger.log", "a") as f:
+                        f.write(f"ANOMALY: avg_count=0. target_stats size={len(target_stats)}\n")
+                        for idx, s in enumerate(target_stats):
+                            f.write(f"  Item {idx}: count={s[5]} score={s[0]} loss={s[1]} tuple_len={len(s)}\n")
+                 
+                 progress = min(avg_count / 2.0, 1.0)
+                 bar_len = 20
+                 filled = int(progress * bar_len)
+                 bar = "█" * filled + "░" * (bar_len - filled)
+                 
+                 # TEMPORARY DEBUG ON SCREEN
+                 counts_str = ",".join(str(s[5]) for s in target_stats)
+                 details = f"{bar} {int(progress*100)}% (Samps: {avg_count:.2f}/2.0) [DBG: {counts_str}]"
+             else:
+                 if avg_loss < 10:
+                    if avg_jitter < 50:
+                        network_status = "EXCELLENT"
+                        style = "bold green"
+                        details = "Network is stable and low jitter"
+                    elif avg_jitter < 200:
+                        network_status = "GOOD"
+                        style = "bold green"
+                        details = "Usable, slight jitter detected"
+                    else:
+                        network_status = "UNSTABLE"
+                        style = "bold yellow"
+                        details = "High jitter detected (Packet variance)"
+                 elif avg_loss < 50:
+                    network_status = "DEGRADED"
                     style = "bold yellow"
-                    details = "High jitter detected (Packet variance)"
-             elif avg_loss < 50:
-                network_status = "DEGRADED"
-                style = "bold yellow"
-                details = "Significant packet loss detected"
+                    details = "Significant packet loss detected"
 
         header_panel = Panel(
             Align.center(
