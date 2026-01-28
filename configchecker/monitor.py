@@ -79,12 +79,91 @@ from rich.text import Text
 from rich.align import Align
 from rich.console import Group, Console
 from rich.style import Style
+import io
 
-async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind_addr: str = None):
+def generate_qr_ascii(data: str) -> str:
+    """Generate ASCII QR code for terminal display."""
+    try:
+        import qrcode
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=1,
+            border=1
+        )
+        qr.add_data(data)
+        qr.make(fit=True)
+        
+        # Generate ASCII art using unicode blocks
+        output = io.StringIO()
+        qr.print_ascii(out=output)
+        return output.getvalue()
+    except Exception:
+        return ""
+
+async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_addr: str = None):
     from .verifier import XrayVerifier # Lazy import to avoid circular dependency if any
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
     
     console = Console()
-    stats_map = {c.raw_link: RollingStats(c) for c in configs}
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # PHASE 1: Real Delay Verification (Tests all configs with actual proxy)
+    # ═══════════════════════════════════════════════════════════════════════
+    console.print("\n[bold cyan]═══ PHASE 1: Testing Real Delay for All Configs ═══[/bold cyan]")
+    console.print("[dim]This verifies configs actually work through proxy...[/dim]\n")
+    
+    verified_configs = []
+    real_delays = {}  # config.raw_link -> latency
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("[cyan]{task.fields[status]}[/cyan]"),
+        console=console
+    ) as progress:
+        task = progress.add_task("Verifying configs...", total=len(configs), status="Starting...")
+        
+        def update_progress(completed, total, name, valid, latency):
+            status = f"✓ {latency:.0f}ms" if valid else "✗ Failed"
+            progress.update(task, completed=completed, status=f"{name[:20]}... {status}")
+        
+        results = await XrayVerifier.verify_all_configs(
+            configs, 
+            concurrency=10,  # Higher concurrency for faster testing
+            progress_callback=update_progress
+        )
+        
+        for config, latency in results:
+            verified_configs.append(config)
+            real_delays[config.raw_link] = latency
+    
+    console.print(f"\n[bold green]✓ Phase 1 Complete: {len(verified_configs)}/{len(configs)} configs verified[/bold green]")
+    
+    if not verified_configs:
+        console.print("[bold red]No working configs found! Exiting.[/bold red]")
+        return
+    
+    # Show top 5 by real delay
+    console.print("\n[bold]Top 5 by Real Delay:[/bold]")
+    for i, cfg in enumerate(verified_configs[:5], 1):
+        lat = real_delays.get(cfg.raw_link, 0)
+        console.print(f"  {i}. {cfg.remarks[:40]} - [cyan]{lat:.0f}ms[/cyan]")
+    
+    console.print("\n[bold cyan]═══ PHASE 2: Stability Monitoring ═══[/bold cyan]\n")
+    await asyncio.sleep(2)  # Brief pause before Phase 2
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # PHASE 2: Stability Monitoring (Only for verified configs)
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    stats_map = {c.raw_link: RollingStats(c) for c in verified_configs}
+    # Pre-populate with real delay data
+    for cfg in verified_configs:
+        stats_map[cfg.raw_link].add(True, real_delays.get(cfg.raw_link, 100))
+    
     sem = asyncio.Semaphore(concurrency)
     
     running = True
@@ -115,25 +194,41 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
                     # Catch pinger crash
                     with open("debug_pinger.log", "a") as f: 
                         f.write(f"CRASH {config.remarks}: {e}\n")
-                    # Sleep to avoid busy loop if crash is persistent
-                    await asyncio.sleep(1)
+                await asyncio.sleep(1)
 
-                await asyncio.sleep(0.2 + (id(config) % 20) / 100.0) # Faster cycle 
+                # Adaptive interval: fast warmup, then slow down to prevent port exhaustion
+                sample_count = len(stat.history)
+                if sample_count < 5:
+                    interval = 0.5  # Fast warmup to show data quickly
+                else:
+                    interval = 2.0 + (id(config) % 100) / 100.0  # Slow steady-state
+                await asyncio.sleep(interval) 
         except Exception as outer_e:
              with open("debug_pinger.log", "a") as f: 
                  f.write(f"FATAL PINGER {config.remarks}: {outer_e}\n") 
 
-    pinger_tasks = [asyncio.create_task(pinger(c)) for c in configs]
+    pinger_tasks = [asyncio.create_task(pinger(c)) for c in verified_configs]
     
     monitor_start_time = time.time()
     recommended_config: ProxyConfig = None
-    verification_status = "" 
+    verification_status = ""
+    failed_verifications = set()  # Track configs that failed verification (by raw_link)
+    last_verification_time = 0  # Cooldown between verification attempts 
 
     def generate_dashboard(rec_config, verify_status):
         snapshots = []
+        
+        # DEBUG: Log what we're seeing in stats
+        debug_samples = []
         for stat in stats_map.values():
             score, loss, lat, jitter, count = stat.get_score()
             snapshots.append((score, loss, lat, jitter, stat.config, count))
+            if len(debug_samples) < 5:  # Log first 5 for debug
+                debug_samples.append(f"{stat.config.remarks[:20]}: hist={len(stat.history)} score={score:.1f} count={count}")
+        
+        # Write debug
+        with open("debug_dashboard.log", "a") as f:
+            f.write(f"DASHBOARD: total_stats={len(snapshots)} samples={debug_samples}\n")
 
         snapshots.sort(key=lambda x: x[0])
 
@@ -225,11 +320,15 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
         elif verify_status:
              footer_content = Text(f"{verify_status}", style="bold yellow")
         elif rec_config:
+            qr_code = generate_qr_ascii(rec_config.raw_link)
             footer_content = Group(
                 Text(f"🏆 Best Stable Config: {rec_config.remarks}", style="bold cyan"),
                 Text(f"Protocol: {rec_config.protocol} | Addr: {rec_config.address}", style="cyan"),
                 Text(f"Raw Link (Copy):", style="dim white"),
-                Text(f"{rec_config.raw_link}", style="bold white on blue")
+                Text(f"{rec_config.raw_link}", style="bold white on blue"),
+                Text(""),  # Spacer
+                Text("📱 Scan QR Code:", style="bold yellow"),
+                Text(qr_code, style="white") if qr_code else Text("(QR unavailable)", style="dim")
             )
             footer_style = "green"
         else:
@@ -281,7 +380,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
 
     try:
         # Initial Render
-        with Live(generate_dashboard(None, ""), refresh_per_second=4, screen=True, auto_refresh=False) as live:
+        with Live(generate_dashboard(None, ""), refresh_per_second=4, screen=True, auto_refresh=True) as live:
             while running:
                 elapsed = time.time() - monitor_start_time
                 
@@ -299,32 +398,42 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 100, bind
                         if rank != -1 and rank <= 10:
                             keep_current = True
                     
-                    if not keep_current:
+                    # Only run verification if we don't have a working config AND cooldown has passed
+                    current_time = time.time()
+                    if not keep_current and (current_time - last_verification_time) > 10:
+                        last_verification_time = current_time
                         recommended_config = None 
                         verification_status = ""
                         
-                        # Find Top 3 Alive candidates
-                        candidates = [s[5] for s in current_snapshots if s[1] < 100][:3]
+                        # Find Top 10 Alive candidates that haven't failed verification
+                        candidates = [s[5] for s in current_snapshots 
+                                     if s[1] < 100 and s[5].raw_link not in failed_verifications][:10]
                         
-                        found_new = False
-                        for cand in candidates:
-                            # Update UI to show we are verifying
-                            verification_status = f"🔍 Verifying: {cand.protocol.upper()} {cand.remarks[:20]}..."
-                            live.update(generate_dashboard(recommended_config, verification_status))
+                        if not candidates:
+                            verification_status = "All top configs failed verification. Retrying in 5 min..."
+                            # Clear failed set after 5 minutes to retry
+                            if len(failed_verifications) > 0:
+                                failed_verifications.clear()
+                        else:
+                            found_new = False
+                            for cand in candidates:
+                                # Update UI to show we are verifying
+                                verification_status = f"🔍 Verifying: {cand.protocol.upper()} {cand.remarks[:20]}..."
+                                live.update(generate_dashboard(recommended_config, verification_status))
+                                
+                                # Verify
+                                is_valid, _ = await XrayVerifier.verify_config(cand)
+                                if is_valid:
+                                    recommended_config = cand
+                                    verification_status = ""
+                                    found_new = True
+                                    break
+                                else:
+                                    # Mark as failed so we don't retry immediately
+                                    failed_verifications.add(cand.raw_link)
                             
-                            # Verify
-                            is_valid = await XrayVerifier.verify_config(cand)
-                            if is_valid:
-                                recommended_config = cand
-                                verification_status = ""
-                                found_new = True
-                                break
-                            else:
-                                # Failed verification, try next
-                                pass
-                        
-                        if not found_new and not recommended_config:
-                             verification_status = "Top configs failed verification."
+                            if not found_new and not recommended_config:
+                                 verification_status = f"Top {len(candidates)} configs failed. Trying others..."
 
                 # Update UI
                 live.update(generate_dashboard(recommended_config, verification_status))

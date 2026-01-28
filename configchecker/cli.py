@@ -33,11 +33,29 @@ async def async_main():
     parser.add_argument("--file", type=str, default=None, help="Path to config file (default: ./configs.txt or package sample)")
     parser.add_argument("--mode", type=str, default="quick", choices=["quick", "stable", "realtime"], help="Mode: quick, stable (duration), or realtime (live monitor)")
     parser.add_argument("--duration", type=int, default=30, help="Duration for stability check in seconds")
-    parser.add_argument("--concurrency", type=int, default=200, help="Number of concurrent checks")
+    parser.add_argument("--concurrency", type=int, default=50, help="Number of concurrent checks")
     parser.add_argument("--bind-ip", type=str, default=None, help="Local IP to bind to (bypass VPN). Default: Auto-detect")
+    parser.add_argument("--no-bind", action="store_true", help="Disable auto-detection of local IP binding")
     args = parser.parse_args()
 
     config_file = args.file
+    if config_file is None:
+         # Re-evaluate default because CWD might change or we want explicit fallback logic
+         if os.path.exists(cwd_config_path):
+             config_file = cwd_config_path
+             print(f"Using configs from current directory: {config_file}")
+         else:
+             config_file = package_config_path
+             print(f"Using default package configs: {config_file}")
+
+    print(f"Reading configs from {config_file}...")
+    try:
+        configs = ConfigParser.parse_file(config_file)
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return
+
+
     if config_file is None:
          # Re-evaluate default because CWD might change or we want explicit fallback logic
          if os.path.exists(cwd_config_path):
@@ -58,7 +76,10 @@ async def async_main():
 
     # Determine bind_addr once for modes that need it
     bind_addr = None
-    if args.bind_ip:
+    if args.no_bind:
+        print("Auto-binding disabled by user.")
+        bind_addr = None
+    elif args.bind_ip:
         bind_addr = args.bind_ip
     elif args.mode in ["stable", "realtime"]: # Only auto-detect if needed by mode
         detected_ip = get_local_ip()

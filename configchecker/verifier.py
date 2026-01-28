@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 import zipfile
 import aiohttp
 from .models import ProxyConfig
@@ -30,16 +31,15 @@ class XrayVerifier:
         if os.path.exists(XrayVerifier.XRAY_PATH):
             return True
             
-        print("Downloading Xray Core for Verification...")
-        os.makedirs(XrayVerifier.BIN_DIR, exist_ok=True)
-        url = XrayVerifier._get_platform_url()
-        
-        if not url:
-            print("Unsupported platform for auto-download.")
-            return False
-            
-        zip_path = os.path.join(XrayVerifier.BIN_DIR, "xray.zip")
+        # Silently download
         try:
+            os.makedirs(XrayVerifier.BIN_DIR, exist_ok=True)
+            url = XrayVerifier._get_platform_url()
+            
+            if not url:
+                return False
+                
+            zip_path = os.path.join(XrayVerifier.BIN_DIR, "xray.zip")
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
@@ -54,18 +54,18 @@ class XrayVerifier:
             if os.path.exists(zip_path):
                 os.remove(zip_path)
             return True
-        except Exception as e:
-            print(f"Failed to download Xray: {e}")
+        except Exception:
             return False
 
     @staticmethod
-    async def verify_config(config: ProxyConfig, timeout=5) -> bool:
+    async def verify_config(config: ProxyConfig, timeout=5) -> tuple:
         """
         Runs Xray with the given config in a temporary process, 
-        tries to proxy a request to a reliable endpoint, and returns True/False.
+        tries to proxy a request to a reliable endpoint.
+        Returns: (is_valid: bool, latency_ms: float)
         """
         if not await XrayVerifier.ensure_xray():
-            return True # Fallback: If no Xray, assume True (TCP check was OK)
+            return True, 0  # Fallback: If no Xray, assume True (TCP check was OK)
             
         # Create temp config.json
         # Port must be random to avoid conflicts
@@ -82,23 +82,9 @@ class XrayVerifier:
             "outbounds": []
         }
         
-        # Convert ProxyConfig to Xray Outbound JSON (Simplified adapter)
-        # This is the tricky part - we need to parse config.raw_link to JSON properly
-        # For now, let's rely on a helper or basic template.
-        # Since we don't have a full link->json converter here, we might need to add it 
-        # or use a simplified approach depending on protocol.
-        
-        # Reuse logic from old xray_manager or re-implement basic parsing?
-        # Actually, for verification, we need accuracy. 
-        # Let's try to infer from link components.
-        
-        # ... Wait, generating a VALID xray json from just a link string is complex.
-        # However, for 'vmess', we already parsed standard fields. for 'vless' too.
-        # Let's support vmess/vless/trojan/ss basic.
-        
         outbound = XrayVerifier._generate_outbound(config)
         if not outbound:
-            return True # Cannot verify this protocol, pass it.
+            return True, 0  # Cannot verify this protocol, pass it.
             
         xray_config["outbounds"].append(outbound)
         
@@ -107,6 +93,7 @@ class XrayVerifier:
             json.dump(xray_config, f)
             
         process = None
+        latency = 0
         try:
             # Start Xray
             process = subprocess.Popen(
@@ -115,34 +102,69 @@ class XrayVerifier:
                 stderr=subprocess.DEVNULL
             )
             
-            # Init Wait
-            await asyncio.sleep(1) # Wait for core startup
+            # Init Wait (fast startup)
+            await asyncio.sleep(0.2)  # Reduced wait for speed
             if process.poll() is not None:
-                return False # Crashed on startup
+                return False, 0  # Crashed on startup
                 
             # Try Proxy Request
             # Using aiohttp with proxy
             async with aiohttp.ClientSession() as session:
                 try:
-                    # Target: Google (Real Delay) or something global like Cloudflare
+                    # Target: Google (Real Delay)
                     start = time.time()
                     async with session.get("http://www.gstatic.com/generate_204", 
                                          proxy=f"http://127.0.0.1:{local_port}",
-                                         timeout=timeout) as resp:
+                                         timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                        latency = (time.time() - start) * 1000
                         if resp.status == 204:
-                            return True
+                            return True, latency
                 except:
-                    return False
+                    return False, 0
         except Exception:
-            return False
+            return False, 0
         finally:
             if process:
                 process.terminate()
-                process.wait()
+                try:
+                    process.wait(timeout=1)
+                except:
+                    process.kill()
             if os.path.exists(config_path):
                 os.remove(config_path)
                 
-        return False
+        return False, 0
+
+    @staticmethod
+    async def verify_all_configs(configs, concurrency=5, progress_callback=None):
+        """
+        Verify all configs with real delay test.
+        Returns: list of (config, is_valid, latency_ms) sorted by latency
+        """
+        await XrayVerifier.ensure_xray()
+        
+        sem = asyncio.Semaphore(concurrency)
+        results = []
+        total = len(configs)
+        completed = 0
+        
+        async def verify_one(config):
+            nonlocal completed
+            async with sem:
+                is_valid, latency = await XrayVerifier.verify_config(config, timeout=5)
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total, config.remarks[:30], is_valid, latency)
+                return (config, is_valid, latency)
+        
+        tasks = [verify_one(c) for c in configs]
+        results = await asyncio.gather(*tasks)
+        
+        # Filter valid configs and sort by latency
+        valid_results = [(c, lat) for c, valid, lat in results if valid and lat > 0]
+        valid_results.sort(key=lambda x: x[1])  # Sort by latency ascending
+        
+        return valid_results
 
     @staticmethod
     def _generate_outbound(config: ProxyConfig) -> dict:
