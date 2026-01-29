@@ -404,8 +404,23 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         table.add_column("Remarks", justify="left", ratio=1, no_wrap=True, overflow="ellipsis") 
 
         count = 0
-        # Show 15 rows to leave space for QR code
-        max_rows = 15
+        # RESPONSIVE: Calculate rows based on terminal height
+        term_height = console.height if console.height else 40
+        
+        # Reserve space for: header(3) + footer(8) + QR(~20 if shown)
+        # Small screens (<35 rows): hide QR, show more table
+        # Large screens (>=35 rows): show QR, fewer table rows
+        show_qr = term_height >= 35 and rec_config
+        
+        if show_qr:
+            # Leave room for QR (~20 lines)
+            max_rows = max(5, term_height - 33)
+        else:
+            # No QR, use more space for table
+            max_rows = max(5, term_height - 15)
+        
+        max_rows = min(max_rows, 25)  # Cap at 25 rows
+        
         for i, (score, loss, lat, jitter, config, count) in enumerate(snapshots, 1): 
              if i > max_rows: break
              
@@ -431,19 +446,19 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
              )
              count += 1
         
-        # Create QR panel - smaller size
+        # Create QR panel only if screen is big enough
         qr_panel = None
-        if rec_config:
+        if show_qr:
             qr_code = generate_qr_ascii(rec_config.raw_link)
             if qr_code and not qr_code.startswith("(QR"):
                 qr_panel = Panel(
                     Align.center(Text(qr_code, style="black on white")),
                     title="📱 Scan",
                     border_style="yellow",
-                    padding=(0, 1)  # Smaller padding
+                    padding=(0, 1)
                 )
         
-        # QR comes BEFORE footer panel (Sticky Best Config)
+        # Layout: header, table, optional QR, footer
         if qr_panel:
             return Group(header_panel, table, Align.center(qr_panel), footer_panel)
         else:
