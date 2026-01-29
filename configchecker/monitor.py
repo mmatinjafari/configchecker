@@ -157,9 +157,10 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         
         # Handle Xray unavailable or results
         if results is None:
-            # Xray not available - skip Phase 1, use all configs
-            console.print("\n[bold yellow]⚠ Xray not available - skipping real delay verification[/bold yellow]")
-            console.print("[dim]Will use TCP-only monitoring for all configs[/dim]")
+            # Xray not available - tell user how to install
+            console.print("\n[bold yellow]⚠ Xray not available - for installing and real delay, run:[/bold yellow]")
+            console.print("[bold white]   curl -sSL https://raw.githubusercontent.com/mmatinjafari/configchecker/master/install-xray.sh | bash[/bold white]\n")
+            console.print("[dim]Continuing with TCP-only monitoring...[/dim]")
             verified_configs = configs
             real_delays = {}
         elif results:
