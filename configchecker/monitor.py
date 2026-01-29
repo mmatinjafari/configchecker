@@ -466,7 +466,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
 
     try:
         # Initial Render
-        with Live(generate_dashboard(None, ""), refresh_per_second=4, screen=True, auto_refresh=True) as live:
+        with Live(generate_dashboard(None, ""), refresh_per_second=4, screen=False, auto_refresh=True) as live:
             while running:
                 elapsed = time.time() - monitor_start_time
                 
