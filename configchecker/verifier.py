@@ -23,7 +23,11 @@ class XrayVerifier:
                 return "https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-macos-arm64-v8a.zip"
             else:
                 return "https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-macos-64.zip"
-        # Add linux/windows if needed later
+        elif system == "linux":
+            if machine == "x86_64" or machine == "amd64":
+                return "https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-64.zip"
+            elif machine == "aarch64" or machine == "arm64":
+                return "https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-arm64-v8a.zip"
         return None
 
     @staticmethod
