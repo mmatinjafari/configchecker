@@ -118,19 +118,33 @@ def generate_qr_ascii(data: str, console_width: int = None) -> tuple:
         width = len(matrix[0]) if matrix else 0
         
         if use_double:
-            # Double-width mode (correct aspect ratio)
-            border_line = "  " * (width + border * 2)
+            # Square mode: 1 char per module + half-block (2 rows in 1 line)
+            # Terminal fonts are 2:1 ratio, so this makes QR visually square
+            border_line = " " * (width + border * 2)
             for _ in range(border):
                 lines.append(border_line)
-            for row in matrix:
-                line = "  " * border
-                for cell in row:
-                    line += "██" if cell else "  "
-                line += "  " * border
+            
+            # Process matrix 2 rows at a time
+            for y in range(0, len(matrix), 2):
+                line = " " * border
+                for x in range(width):
+                    top = matrix[y][x] if y < len(matrix) else False
+                    bottom = matrix[y + 1][x] if y + 1 < len(matrix) else False
+                    
+                    if top and bottom:
+                        line += "█"  # Both dark
+                    elif top:
+                        line += "▀"  # Only top dark
+                    elif bottom:
+                        line += "▄"  # Only bottom dark
+                    else:
+                        line += " "  # Both light
+                line += " " * border
                 lines.append(line)
+            
             for _ in range(border):
                 lines.append(border_line)
-            qr_width = (width + border * 2) * 2
+            qr_width = width + border * 2
         else:
             # Compact mode (single char, smaller)
             border_line = " " * (width + border * 2)
@@ -513,7 +527,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
             if mode:  # mode is 'double' or 'compact' if successful
                 # QR fits - create panel with no_wrap
                 qr_panel = Panel(
-                    Align.center(Text(qr_text, style="white on black", no_wrap=True, overflow="ignore")),
+                    Align.center(Text(qr_text, style="black on white", no_wrap=True, overflow="ignore")),
                     title=f"📱 Scan",
                     border_style="yellow",
                     padding=(0, 1)
