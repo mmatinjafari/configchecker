@@ -83,25 +83,46 @@ import io
 
 def generate_qr_ascii(data: str, console_width: int = None) -> tuple:
     """
-    Generate QR code for terminal display using segno.
+    Generate QR code for terminal with correct aspect ratio.
+    Uses double-width characters (██ and  ) to make QR square.
     Returns: (qr_text, qr_width) or (error_message, 0) on failure
-    
-    If console_width is provided and QR is too wide, returns error message.
     """
     try:
         import segno
         qr = segno.make(data, error='L', boost_error=False)
         
-        # Get the QR matrix to calculate width
-        output = io.StringIO()
-        qr.terminal(out=output, compact=True, border=2)
-        qr_text = output.getvalue()
+        # Get the matrix (list of lists of booleans)
+        matrix = qr.matrix
         
-        # Calculate actual width (longest line)
-        lines = qr_text.strip().split('\n')
-        qr_width = max(len(line) for line in lines) if lines else 0
+        # Add 2-module quiet zone (border)
+        border = 2
+        height = len(matrix)
+        width = len(matrix[0]) if matrix else 0
         
-        # Check if terminal is wide enough (if width provided)
+        lines = []
+        
+        # Top border (2 rows of spaces)
+        border_line = "  " * (width + border * 2)
+        for _ in range(border):
+            lines.append(border_line)
+        
+        # QR content with side borders
+        for row in matrix:
+            line = "  " * border  # Left border
+            for cell in row:
+                # Two characters per module for correct aspect ratio
+                line += "██" if cell else "  "
+            line += "  " * border  # Right border
+            lines.append(line)
+        
+        # Bottom border
+        for _ in range(border):
+            lines.append(border_line)
+        
+        qr_text = "\n".join(lines)
+        qr_width = (width + border * 2) * 2  # Each module = 2 chars
+        
+        # Check if terminal is wide enough
         if console_width and qr_width > console_width - 10:
             return ("Terminal too narrow for QR", 0)
         
