@@ -398,9 +398,10 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         table.add_column("Remarks", justify="left", ratio=1, no_wrap=True, overflow="ellipsis") 
 
         count = 0
+        # Show 15 rows to leave space for QR code
+        max_rows = 15
         for i, (score, loss, lat, jitter, config, count) in enumerate(snapshots, 1): 
-             # Visualization Logic: Show top 25, but stop if score gets too bad unless it's top 10
-             if i > 25: break
+             if i > max_rows: break
              
              row_style = ""
              if config == rec_config:
