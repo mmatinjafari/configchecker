@@ -83,87 +83,63 @@ import io
 
 def generate_qr_ascii(data: str, console_width: int = None) -> tuple:
     """
-    Generate QR code for terminal with adaptive sizing.
-    - Double-width mode: "██" per module, border=2 (best aspect ratio)
-    - Compact mode: "█" per module, border=1 (for narrow screens)
-    Returns: (qr_text, qr_width, mode) or (error_message, 0, None) on failure
+    Generate QR code for terminal with strict width checking.
+    - Uses "half-block" rendering (standard for best aspect ratio).
+    - Checks if QR fits in console_width.
+    Returns: (qr_text, qr_width, "success") or (None, required_width, "error") if too narrow.
     """
     try:
         import segno
         qr = segno.make(data, error='L', boost_error=False)
         matrix = qr.matrix
         
-        qr_modules = len(matrix[0]) if matrix else 0
+        modules = len(matrix[0]) if matrix else 0
         
-        # Calculate widths for both modes
-        double_width = qr_modules + 4        # border=2, 1 char per module (half-block)
-        compact_width = qr_modules + 2       # border=1, 1 char per module
-        
-        # Determine which mode to use
-        use_double = True
+        # Standard Border = 2
         border = 2
+        required_width = modules + (border * 2)
         
-        if console_width:
-            if double_width <= console_width - 10:
-                use_double = True
-                border = 2
-            elif compact_width <= console_width - 5:
-                use_double = False
-                border = 1
-            else:
-                return ("Terminal too narrow", 0, None)
-        
-        # Build QR text
+        # Guard: Check Width
+        if console_width and required_width > console_width:
+             # Try reducing border to 1
+             border = 1
+             required_width = modules + (border * 2)
+             
+             if required_width > console_width:
+                 return (None, required_width, "error")
+
+        # Build QR text (Half-Block Renderer)
         lines = []
-        width = len(matrix[0]) if matrix else 0
+        width = modules
+        border_line = " " * required_width
         
-        if use_double:
-            # Square mode: 1 char per module + half-block (2 rows in 1 line)
-            # Terminal fonts are 2:1 ratio, so this makes QR visually square
-            border_line = " " * (width + border * 2)
-            for _ in range(border):
-                lines.append(border_line)
-            
-            # Process matrix 2 rows at a time
-            for y in range(0, len(matrix), 2):
-                line = " " * border
-                for x in range(width):
-                    top = matrix[y][x] if y < len(matrix) else False
-                    bottom = matrix[y + 1][x] if y + 1 < len(matrix) else False
-                    
-                    if top and bottom:
-                        line += "█"  # Both dark
-                    elif top:
-                        line += "▀"  # Only top dark
-                    elif bottom:
-                        line += "▄"  # Only bottom dark
-                    else:
-                        line += " "  # Both light
-                line += " " * border
-                lines.append(line)
-            
-            for _ in range(border):
-                lines.append(border_line)
-            qr_width = width + border * 2
-        else:
-            # Compact mode (single char, smaller)
-            border_line = " " * (width + border * 2)
-            for _ in range(border):
-                lines.append(border_line)
-            for row in matrix:
-                line = " " * border
-                for cell in row:
-                    line += "█" if cell else " "
-                line += " " * border
-                lines.append(line)
-            for _ in range(border):
-                lines.append(border_line)
-            qr_width = width + border * 2
+        for _ in range(border):
+            lines.append(border_line)
         
-        mode = "double" if use_double else "compact"
-        return ("\n".join(lines), qr_width, mode)
+        # Process matrix 2 rows at a time
+        for y in range(0, len(matrix), 2):
+            line = " " * border
+            for x in range(width):
+                top = matrix[y][x] if y < len(matrix) else False
+                bottom = matrix[y + 1][x] if y + 1 < len(matrix) else False
+                
+                if top and bottom:
+                    line += "█"  # Both dark
+                elif top:
+                    line += "▀"  # Only top dark
+                elif bottom:
+                    line += "▄"  # Only bottom dark
+                else:
+                    line += " "  # Both light
+            line += " " * border
+            lines.append(line)
+        
+        for _ in range(border):
+            lines.append(border_line)
+            
+        return ("\n".join(lines), required_width, "success")
     except Exception as e:
-        return (f"(QR error: {e})", 0, None)
+        return (f"(QR error: {e})", 0, "error")
 
 def generate_fullscreen_qr(data: str, console) -> None:
     """Display QR code fullscreen with dark background for better scanning."""
@@ -522,10 +498,10 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         if show_qr:
             # Calculate available width for QR (approx 1/3 of screen)
             available_width = console.width // 3 if console.width else 40
-            qr_text, qr_width, mode = generate_qr_ascii(rec_config.raw_link, available_width)
+            qr_text, qr_width, status = generate_qr_ascii(rec_config.raw_link, available_width)
             
-            if mode:  # mode is 'double' or 'compact' if successful
-                # QR fits - create panel with no_wrap
+            if status == "success":
+                # QR fits - create panel with fixed styling
                 qr_panel = Panel(
                     Align.center(Text(qr_text, style="black on white", no_wrap=True, overflow="ignore")),
                     title=f"📱 Scan",
@@ -533,12 +509,18 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                     padding=(0, 1)
                 )
             else:
-                # QR even in compact mode is too wide
+                # QR Overflow or Error
                 qr_panel = Panel(
-                    Text("QR: Widen terminal\nor copy link", style="dim yellow", justify="center"),
+                    Align.center(
+                        Group(
+                            Text("⚠️  Terminal too narrow", style="bold red"),
+                            Text("Resize window to view QR", style="dim white"),
+                            Text("or copy link below", style="dim white")
+                        )
+                    ),
                     title="📱",
                     border_style="dim yellow",
-                    padding=(0, 0)
+                    padding=(1, 1)
                 )
         
         # Layout: header, table, then footer+QR side by side
