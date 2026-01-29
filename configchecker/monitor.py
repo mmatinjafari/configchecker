@@ -94,6 +94,53 @@ def generate_qr_ascii(data: str) -> str:
     except Exception as e:
         return f"(QR error: {e})"
 
+def generate_fullscreen_qr(data: str, console) -> None:
+    """Display QR code fullscreen with dark background for better scanning."""
+    try:
+        import segno
+        qr = segno.make(data, error='L', boost_error=False)
+        
+        # Get terminal size
+        term_width = console.width
+        term_height = console.height
+        
+        # Generate QR
+        output = io.StringIO()
+        qr.terminal(out=output, compact=True, border=2)
+        qr_text = output.getvalue()
+        
+        qr_lines = qr_text.strip().split('\n')
+        qr_height = len(qr_lines)
+        qr_width = len(qr_lines[0]) if qr_lines else 0
+        
+        # Calculate padding for centering
+        top_padding = max(0, (term_height - qr_height - 6) // 2)
+        left_padding = max(0, (term_width - qr_width) // 2)
+        
+        # Clear screen and show fullscreen QR
+        console.clear()
+        
+        # Top padding
+        for _ in range(top_padding):
+            console.print("")
+        
+        # Title
+        console.print(Align.center(Text("📱 SCAN THIS QR CODE", style="bold yellow on black")))
+        console.print(Align.center(Text("Press any key to return...", style="dim white on black")))
+        console.print("")
+        
+        # QR code centered with white on black for contrast
+        for line in qr_lines:
+            padded_line = " " * left_padding + line
+            console.print(Text(padded_line, style="white on black"))
+        
+        console.print("")
+        console.print(Align.center(Text("━" * 40, style="dim")))
+        
+    except Exception as e:
+        console.print(f"[red]QR Error: {e}[/red]")
+
+
 async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_addr: str = None):
     from .verifier import XrayVerifier # Lazy import to avoid circular dependency if any
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -383,24 +430,16 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
             qr_code = generate_qr_ascii(rec_config.raw_link)
             if qr_code and not qr_code.startswith("(QR"):
                 qr_panel = Panel(
-                    Align.center(Text(qr_code, style="black on white"), vertical="middle"),
-                    title="📱 Scan",
+                    Align.center(Text(qr_code, style="black on white")),
+                    title="📱 SCAN QR CODE",
+                    subtitle=f"{rec_config.remarks[:30]}",
                     border_style="bold yellow",
-                    padding=(1, 2)
+                    padding=(1, 4)
                 )
         
-        # Use Layout for side-by-side: table on left, QR on right
+        # QR centered below everything for maximum visibility
         if qr_panel:
-            from rich.table import Table as RichTable
-            # Create a wrapper table for side-by-side layout
-            layout_table = RichTable.grid(expand=True)
-            layout_table.add_column("main", ratio=3)
-            layout_table.add_column("qr", ratio=1, justify="center")
-            layout_table.add_row(
-                Group(header_panel, table, footer_panel),
-                Align.center(qr_panel, vertical="middle")
-            )
-            return layout_table
+            return Group(header_panel, table, footer_panel, Align.center(qr_panel))
         else:
             return Group(header_panel, table, footer_panel)
 
