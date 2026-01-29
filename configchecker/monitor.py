@@ -81,18 +81,33 @@ from rich.console import Group, Console
 from rich.style import Style
 import io
 
-def generate_qr_ascii(data: str) -> str:
-    """Generate clean ASCII QR code for terminal display using segno (better scanning)."""
+def generate_qr_ascii(data: str, console_width: int = None) -> tuple:
+    """
+    Generate QR code for terminal display using segno.
+    Returns: (qr_text, qr_width) or (error_message, 0) on failure
+    
+    If console_width is provided and QR is too wide, returns error message.
+    """
     try:
         import segno
         qr = segno.make(data, error='L', boost_error=False)
         
-        # Use segno's terminal output which is optimized for scanning
+        # Get the QR matrix to calculate width
         output = io.StringIO()
-        qr.terminal(out=output, compact=True, border=1)
-        return output.getvalue()
+        qr.terminal(out=output, compact=True, border=2)
+        qr_text = output.getvalue()
+        
+        # Calculate actual width (longest line)
+        lines = qr_text.strip().split('\n')
+        qr_width = max(len(line) for line in lines) if lines else 0
+        
+        # Check if terminal is wide enough (if width provided)
+        if console_width and qr_width > console_width - 10:
+            return ("Terminal too narrow for QR", 0)
+        
+        return (qr_text, qr_width)
     except Exception as e:
-        return f"(QR error: {e})"
+        return (f"(QR error: {e})", 0)
 
 def generate_fullscreen_qr(data: str, console) -> None:
     """Display QR code fullscreen with dark background for better scanning."""
@@ -449,13 +464,25 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         # Create QR panel only if screen is big enough
         qr_panel = None
         if show_qr:
-            qr_code = generate_qr_ascii(rec_config.raw_link)
-            if qr_code and not qr_code.startswith("(QR"):
+            # Calculate available width for QR (approx 1/3 of screen)
+            available_width = console.width // 3 if console.width else 40
+            qr_text, qr_width = generate_qr_ascii(rec_config.raw_link, available_width)
+            
+            if qr_width > 0:
+                # QR fits - create panel with no_wrap to prevent line breaking
                 qr_panel = Panel(
-                    Align.center(Text(qr_code, style="black on white")),
+                    Align.center(Text(qr_text, style="white on black", no_wrap=True, overflow="ignore")),
                     title="📱 Scan",
                     border_style="yellow",
                     padding=(0, 1)
+                )
+            else:
+                # QR too wide - show compact message
+                qr_panel = Panel(
+                    Text("QR: Widen terminal\nor copy link", style="dim yellow", justify="center"),
+                    title="📱",
+                    border_style="dim yellow",
+                    padding=(0, 0)
                 )
         
         # Layout: header, table, then footer+QR side by side
