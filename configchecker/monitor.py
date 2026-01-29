@@ -96,7 +96,7 @@ def generate_qr_ascii(data: str, console_width: int = None) -> tuple:
         qr_modules = len(matrix[0]) if matrix else 0
         
         # Calculate widths for both modes
-        double_width = (qr_modules + 4) * 2  # border=2, 2 chars per module
+        double_width = qr_modules + 4        # border=2, 1 char per module (half-block)
         compact_width = qr_modules + 2       # border=1, 1 char per module
         
         # Determine which mode to use
@@ -490,7 +490,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
             # No QR, use more space for table
             max_rows = max(5, term_height - 15)
         
-        max_rows = min(max_rows, 25)  # Cap at 25 rows
+        max_rows = min(max_rows, 15)  # Cap at 15 rows
         
         for i, (score, loss, lat, jitter, config, count) in enumerate(snapshots, 1): 
              if i > max_rows: break
