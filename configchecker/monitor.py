@@ -458,15 +458,21 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                     padding=(0, 1)
                 )
         
-        # Layout: header, table, optional QR, footer
+        # Layout: header, table, then footer+QR side by side
         if qr_panel:
-            return Group(header_panel, table, Align.center(qr_panel), footer_panel)
+            from rich.table import Table as RichTable
+            # Create side-by-side layout: footer on left, QR on right
+            bottom_layout = RichTable.grid(expand=True)
+            bottom_layout.add_column("footer", ratio=2)
+            bottom_layout.add_column("qr", ratio=1)
+            bottom_layout.add_row(footer_panel, Align.center(qr_panel, vertical="middle"))
+            return Group(header_panel, table, bottom_layout)
         else:
             return Group(header_panel, table, footer_panel)
 
     try:
         # Initial Render
-        with Live(generate_dashboard(None, ""), refresh_per_second=4, screen=False, auto_refresh=True) as live:
+        with Live(generate_dashboard(None, ""), refresh_per_second=4, screen=True, auto_refresh=True) as live:
             while running:
                 elapsed = time.time() - monitor_start_time
                 
