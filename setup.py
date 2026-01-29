@@ -9,7 +9,7 @@ setup(
         "python-dotenv>=1.0.0",
         "tqdm>=4.66.1",
         "rich>=13.7.0",
-        "qrcode>=8.0",
+        "segno>=1.6.0",
     ],
     include_package_data=True,
     package_data={

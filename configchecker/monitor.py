@@ -82,41 +82,15 @@ from rich.style import Style
 import io
 
 def generate_qr_ascii(data: str) -> str:
-    """Generate compact ASCII QR code for terminal display using Unicode blocks."""
+    """Generate clean ASCII QR code for terminal display using segno (better scanning)."""
     try:
-        import qrcode
-        qr = qrcode.QRCode(
-            version=1,  # Smallest version
-            error_correction=qrcode.constants.ERROR_CORRECT_L,  # Low error correction = smaller
-            box_size=1,
-            border=1  # Minimal border
-        )
-        qr.add_data(data)
-        qr.make(fit=True)
+        import segno
+        qr = segno.make(data, error='L', boost_error=False)
         
-        # Get the QR matrix
-        matrix = qr.get_matrix()
-        
-        # Use Unicode block characters for compact display (2 rows per line)
-        # ▀ (upper half), ▄ (lower half), █ (full), ' ' (none)
-        lines = []
-        for y in range(0, len(matrix), 2):
-            line = ""
-            for x in range(len(matrix[0])):
-                top = matrix[y][x] if y < len(matrix) else False
-                bottom = matrix[y + 1][x] if y + 1 < len(matrix) else False
-                
-                if top and bottom:
-                    line += "█"
-                elif top:
-                    line += "▀"
-                elif bottom:
-                    line += "▄"
-                else:
-                    line += " "
-            lines.append(line)
-        
-        return "\n".join(lines)
+        # Use segno's terminal output which is optimized for scanning
+        output = io.StringIO()
+        qr.terminal(out=output, compact=True, border=1)
+        return output.getvalue()
     except Exception as e:
         return f"(QR error: {e})"
 
