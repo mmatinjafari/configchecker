@@ -82,24 +82,43 @@ from rich.style import Style
 import io
 
 def generate_qr_ascii(data: str) -> str:
-    """Generate ASCII QR code for terminal display."""
+    """Generate compact ASCII QR code for terminal display using Unicode blocks."""
     try:
         import qrcode
         qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            version=1,  # Smallest version
+            error_correction=qrcode.constants.ERROR_CORRECT_L,  # Low error correction = smaller
             box_size=1,
-            border=1
+            border=1  # Minimal border
         )
         qr.add_data(data)
         qr.make(fit=True)
         
-        # Generate ASCII art using unicode blocks
-        output = io.StringIO()
-        qr.print_ascii(out=output)
-        return output.getvalue()
-    except Exception:
-        return ""
+        # Get the QR matrix
+        matrix = qr.get_matrix()
+        
+        # Use Unicode block characters for compact display (2 rows per line)
+        # ▀ (upper half), ▄ (lower half), █ (full), ' ' (none)
+        lines = []
+        for y in range(0, len(matrix), 2):
+            line = ""
+            for x in range(len(matrix[0])):
+                top = matrix[y][x] if y < len(matrix) else False
+                bottom = matrix[y + 1][x] if y + 1 < len(matrix) else False
+                
+                if top and bottom:
+                    line += "█"
+                elif top:
+                    line += "▀"
+                elif bottom:
+                    line += "▄"
+                else:
+                    line += " "
+            lines.append(line)
+        
+        return "\n".join(lines)
+    except Exception as e:
+        return f"(QR error: {e})"
 
 async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_addr: str = None):
     from .verifier import XrayVerifier # Lazy import to avoid circular dependency if any
@@ -136,21 +155,31 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
             progress_callback=update_progress
         )
         
-        for config, latency in results:
-            verified_configs.append(config)
-            real_delays[config.raw_link] = latency
-    
-    console.print(f"\n[bold green]✓ Phase 1 Complete: {len(verified_configs)}/{len(configs)} configs verified[/bold green]")
+        # Handle Xray unavailable or results
+        if results is None:
+            # Xray not available - skip Phase 1, use all configs
+            console.print("\n[bold yellow]⚠ Xray not available - skipping real delay verification[/bold yellow]")
+            console.print("[dim]Will use TCP-only monitoring for all configs[/dim]")
+            verified_configs = configs
+            real_delays = {}
+        elif results:
+            for config, latency in results:
+                verified_configs.append(config)
+                real_delays[config.raw_link] = latency
+            console.print(f"\n[bold green]✓ Phase 1 Complete: {len(verified_configs)}/{len(configs)} configs verified[/bold green]")
+        else:
+            console.print(f"\n[bold green]✓ Phase 1 Complete: 0/{len(configs)} configs verified[/bold green]")
     
     if not verified_configs:
         console.print("[bold red]No working configs found! Exiting.[/bold red]")
         return
     
-    # Show top 5 by real delay
-    console.print("\n[bold]Top 5 by Real Delay:[/bold]")
-    for i, cfg in enumerate(verified_configs[:5], 1):
-        lat = real_delays.get(cfg.raw_link, 0)
-        console.print(f"  {i}. {cfg.remarks[:40]} - [cyan]{lat:.0f}ms[/cyan]")
+    # Show top 5 by real delay (only if we have real delays)
+    if real_delays:
+        console.print("\n[bold]Top 5 by Real Delay:[/bold]")
+        for i, cfg in enumerate(verified_configs[:5], 1):
+            lat = real_delays.get(cfg.raw_link, 0)
+            console.print(f"  {i}. {cfg.remarks[:40]} - [cyan]{lat:.0f}ms[/cyan]")
     
     console.print("\n[bold cyan]═══ PHASE 2: Stability Monitoring ═══[/bold cyan]\n")
     await asyncio.sleep(2)  # Brief pause before Phase 2
@@ -320,15 +349,12 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         elif verify_status:
              footer_content = Text(f"{verify_status}", style="bold yellow")
         elif rec_config:
-            qr_code = generate_qr_ascii(rec_config.raw_link)
+            # Config info only (QR will be in separate panel)
             footer_content = Group(
-                Text(f"🏆 Best Stable Config: {rec_config.remarks}", style="bold cyan"),
-                Text(f"Protocol: {rec_config.protocol} | Addr: {rec_config.address}", style="cyan"),
-                Text(f"Raw Link (Copy):", style="dim white"),
-                Text(f"{rec_config.raw_link}", style="bold white on blue"),
-                Text(""),  # Spacer
-                Text("📱 Scan QR Code:", style="bold yellow"),
-                Text(qr_code, style="white") if qr_code else Text("(QR unavailable)", style="dim")
+                Text(f"🏆 {rec_config.remarks[:60]}", style="bold cyan"),
+                Text(f"{rec_config.protocol.upper()} → {rec_config.address}:{rec_config.port}", style="cyan"),
+                Text(""),
+                Text(rec_config.raw_link, style="dim white", overflow="fold"),
             )
             footer_style = "green"
         else:
@@ -376,7 +402,32 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
              )
              count += 1
         
-        return Group(header_panel, table, footer_panel)
+        # Create QR panel separately if we have a recommended config
+        qr_panel = None
+        if rec_config:
+            qr_code = generate_qr_ascii(rec_config.raw_link)
+            if qr_code and not qr_code.startswith("(QR"):
+                qr_panel = Panel(
+                    Align.center(Text(qr_code, style="black on white"), vertical="middle"),
+                    title="📱 Scan",
+                    border_style="bold yellow",
+                    padding=(1, 2)
+                )
+        
+        # Use Layout for side-by-side: table on left, QR on right
+        if qr_panel:
+            from rich.table import Table as RichTable
+            # Create a wrapper table for side-by-side layout
+            layout_table = RichTable.grid(expand=True)
+            layout_table.add_column("main", ratio=3)
+            layout_table.add_column("qr", ratio=1, justify="center")
+            layout_table.add_row(
+                Group(header_panel, table, footer_panel),
+                Align.center(qr_panel, vertical="middle")
+            )
+            return layout_table
+        else:
+            return Group(header_panel, table, footer_panel)
 
     try:
         # Initial Render

@@ -139,9 +139,13 @@ class XrayVerifier:
     async def verify_all_configs(configs, concurrency=5, progress_callback=None):
         """
         Verify all configs with real delay test.
-        Returns: list of (config, is_valid, latency_ms) sorted by latency
+        Returns: list of (config, latency_ms) sorted by latency, or None if Xray unavailable
         """
-        await XrayVerifier.ensure_xray()
+        # Check if Xray is available first
+        xray_available = await XrayVerifier.ensure_xray()
+        if not xray_available:
+            # Return None to signal that Phase 1 should be skipped
+            return None
         
         sem = asyncio.Semaphore(concurrency)
         results = []
