@@ -153,6 +153,12 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
     console.print("\n[bold cyan]═══ PHASE 1: Testing Real Delay for All Configs ═══[/bold cyan]")
     console.print("[dim]This verifies configs actually work through proxy...[/dim]\n")
     
+    # Check if Xray needs to be downloaded (show message to user)
+    import os
+    xray_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "xray")
+    if not os.path.exists(xray_path):
+        console.print("[yellow]⬇️  Downloading Xray core (first time only)...[/yellow]")
+    
     verified_configs = []
     real_delays = {}  # config.raw_link -> latency
     
