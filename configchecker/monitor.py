@@ -425,22 +425,21 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
              )
              count += 1
         
-        # Create QR panel separately if we have a recommended config
+        # Create QR panel - smaller size
         qr_panel = None
         if rec_config:
             qr_code = generate_qr_ascii(rec_config.raw_link)
             if qr_code and not qr_code.startswith("(QR"):
                 qr_panel = Panel(
                     Align.center(Text(qr_code, style="black on white")),
-                    title="📱 SCAN QR CODE",
-                    subtitle=f"{rec_config.remarks[:30]}",
-                    border_style="bold yellow",
-                    padding=(1, 4)
+                    title="📱 Scan",
+                    border_style="yellow",
+                    padding=(0, 1)  # Smaller padding
                 )
         
-        # QR centered below everything for maximum visibility
+        # QR comes BEFORE footer panel (Sticky Best Config)
         if qr_panel:
-            return Group(header_panel, table, footer_panel, Align.center(qr_panel))
+            return Group(header_panel, table, Align.center(qr_panel), footer_panel)
         else:
             return Group(header_panel, table, footer_panel)
 
