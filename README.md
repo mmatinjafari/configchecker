@@ -19,7 +19,7 @@ Unlike simple ping tools, **Stability Checker** monitors connections over a dura
 - **🧠 Smart Reporting**:
   - Recursively decodes URL-encoded remarks/names.
   - Highlights the **Top 5 Best Configs** at the end of the run.
-- **🛠 CLI Wrapper**: Includes a `stablecheck` script that handles virtual environments automatically.
+- **🛠 CLI Wrapper**: Includes a `configchecker` script that handles virtual environments automatically.
 
 ## 📦 Installation
 
@@ -32,7 +32,7 @@ pipx install git+https://github.com/mmatinjafari/configchecker.git
 
 Then run anywhere:
 ```bash
-stablecheck --mode realtime
+configchecker --mode realtime
 ```
 
 > **Note:** Install pipx first if needed: `brew install pipx && pipx ensurepath` (macOS) or `pip install pipx`
@@ -60,24 +60,24 @@ Tests all configs in `configs.txt` for a specific duration to measure stability.
 
 ```bash
 # Run for 60 seconds (Standard Test)
-stablecheck --mode stable --duration 60
+configchecker --mode stable --duration 60
 
 # Run for 2 minutes
-stablecheck --mode stable --duration 120
+configchecker --mode stable --duration 120
 ```
 
 ### 2. Quick Mode
 Performs a single "one-shot" connectivity check on all configs. Good for quickly filtering out dead servers.
 
 ```bash
-stablecheck --mode quick
+configchecker --mode quick
 ```
 
 ### 3. Realtime Mode
 Launches a **live dashboard** using **real delay verification** (via Xray proxy). Monitors the **top 30 configs** with 5-second polling, showing stability scores and a **QR code** for the best config.
 
 ```bash
-stablecheck --mode realtime
+configchecker --mode realtime
 ```
 
 **Keyboard Navigation:**
