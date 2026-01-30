@@ -1,6 +1,8 @@
 import asyncio
 import time
 import statistics
+import sys
+import select
 from collections import deque
 from typing import List, Dict, Deque
 from rich.live import Live
@@ -9,6 +11,78 @@ from rich.layout import Layout
 from rich.console import Console
 from .models import ProxyConfig
 from .checker import ProxyChecker
+
+# Keyboard input handler for navigation
+try:
+    import termios
+    import tty
+    HAS_TERMIOS = True
+except ImportError:
+    HAS_TERMIOS = False
+
+class KeyboardHandler:
+    """Non-blocking keyboard input handler for Unix terminals."""
+    
+    def __init__(self):
+        self.old_settings = None
+        self.enabled = False
+        
+    def enable_raw(self):
+        """Enable raw mode for immediate key detection."""
+        if not HAS_TERMIOS:
+            return False
+        try:
+            self.old_settings = termios.tcgetattr(sys.stdin)
+            tty.setcbreak(sys.stdin.fileno())
+            self.enabled = True
+            return True
+        except Exception:
+            return False
+    
+    def restore(self):
+        """Restore terminal to normal mode."""
+        if self.old_settings and HAS_TERMIOS:
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
+            except Exception:
+                pass
+        self.enabled = False
+    
+    def get_key(self, timeout=0.05):
+        """
+        Non-blocking key read.
+        Returns: 'up', 'down', 'esc', 'enter', or None
+        """
+        if not self.enabled or not HAS_TERMIOS:
+            return None
+        try:
+            if select.select([sys.stdin], [], [], timeout)[0]:
+                ch = sys.stdin.read(1)
+                
+                if ch == '\x1b':  # Escape sequence
+                    # Read more characters for arrow keys
+                    if select.select([sys.stdin], [], [], 0.01)[0]:
+                        ch2 = sys.stdin.read(1)
+                        if ch2 == '[':
+                            if select.select([sys.stdin], [], [], 0.01)[0]:
+                                ch3 = sys.stdin.read(1)
+                                if ch3 == 'A':
+                                    return 'up'
+                                elif ch3 == 'B':
+                                    return 'down'
+                    return 'esc'  # Plain Escape
+                
+                elif ch == 'k' or ch == 'K':
+                    return 'up'
+                elif ch == 'j' or ch == 'J':
+                    return 'down'
+                elif ch == '\r' or ch == '\n':
+                    return 'enter'
+                elif ch == 'q' or ch == 'Q':
+                    return 'quit'
+        except Exception:
+            pass
+        return None
 
 class RollingStats:
     def __init__(self, config: ProxyConfig, maxlen=100):
@@ -318,8 +392,13 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
     verification_status = ""
     failed_verifications = set()  # Track configs that failed verification (by raw_link)
     last_verification_time = 0  # Cooldown between verification attempts 
+    
+    # Navigation state
+    selected_index = 0  # Currently selected row in the table
+    manual_mode = False  # True when user is manually navigating
+    cached_snapshots = []  # Cache snapshots for navigation
 
-    def generate_dashboard(rec_config, verify_status):
+    def generate_dashboard(rec_config, verify_status, sel_idx=0, is_manual=False):
         snapshots = []
         
         # DEBUG: Log what we're seeing in stats
@@ -419,35 +498,49 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         footer_content = None
         footer_style = "blue"
         
+        # Determine which config to display: selected (manual) or recommended (auto)
+        display_config = None
+        if is_manual and sel_idx < len(snapshots):
+            display_config = snapshots[sel_idx][4]  # config is at index 4
+        else:
+            display_config = rec_config
+        
+        # Navigation hint
+        nav_hint = "  [dim]↑↓ Navigate | Esc: Auto mode[/dim]" if is_manual else "  [dim]↑↓ to browse configs[/dim]"
+        
         if elapsed < 60:
             footer_content = Text(f"⏳ Analyzing stability... Best config will appear in {60 - int(elapsed)}s", style="dim white")
         elif verify_status:
              footer_content = Text(f"{verify_status}", style="bold yellow")
-        elif rec_config:
-            # Config info only (QR will be in separate panel)
+        elif display_config:
+            # Config info (selected or recommended)
+            mode_indicator = "👆 Selected" if is_manual else "🏆 Best"
             footer_content = Group(
-                Text(f"🏆 {rec_config.remarks[:60]}", style="bold cyan"),
-                Text(f"{rec_config.protocol.upper()} → {rec_config.address}:{rec_config.port}", style="cyan"),
+                Text(f"{mode_indicator}: {display_config.remarks[:55]}", style="bold cyan"),
+                Text(f"{display_config.protocol.upper()} → {display_config.address}:{display_config.port}", style="cyan"),
                 Text(""),
-                Text(rec_config.raw_link, style="dim white", overflow="fold"),
+                Text(display_config.raw_link, style="dim white", overflow="fold"),
             )
-            footer_style = "green"
+            footer_style = "cyan" if is_manual else "green"
         else:
             footer_content = Text("No verified stable configs found yet...", style="red")
 
+        footer_title = "👆 Selected Config" if is_manual else "🏆 Sticky Best Config (Verified)"
         footer_panel = Panel(
             Align.center(footer_content),
-            title="🏆 Sticky Best Config (Verified)",
+            title=footer_title,
+            subtitle=nav_hint if display_config or is_manual else None,
             border_style=footer_style
         )
 
         table = Table(expand=True, border_style="dim white")
-        table.add_column("Rank", justify="right", width=8)
-        table.add_column("Score", justify="right", width=15)
-        table.add_column("Loss %", justify="right", width=15)
-        table.add_column("Latency", justify="right", width=18)
-        table.add_column("Jitter", justify="right", width=18)
-        table.add_column("Protocol", justify="left", width=15)
+        table.add_column("", justify="center", width=3)  # Selection indicator
+        table.add_column("Rank", justify="right", width=6)
+        table.add_column("Score", justify="right", width=12)
+        table.add_column("Loss %", justify="right", width=10)
+        table.add_column("Latency", justify="right", width=12)
+        table.add_column("Jitter", justify="right", width=12)
+        table.add_column("Protocol", justify="left", width=10)
         table.add_column("Remarks", justify="left", ratio=1, no_wrap=True, overflow="ellipsis") 
 
         count = 0
@@ -457,7 +550,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         # Reserve space for: header(3) + footer(8) + QR(~20 if shown)
         # Small screens (<35 rows): hide QR, show more table
         # Large screens (>=35 rows): show QR, fewer table rows
-        show_qr = term_height >= 35 and rec_config
+        show_qr = term_height >= 35 and display_config
         
         if show_qr:
             # Leave room for QR (~20 lines)
@@ -468,11 +561,20 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         
         max_rows = min(max_rows, 15)  # Cap at 15 rows
         
-        for i, (score, loss, lat, jitter, config, count) in enumerate(snapshots, 1): 
-             if i > max_rows: break
+        # Cache snapshots for navigation
+        nonlocal cached_snapshots
+        cached_snapshots = snapshots
+        
+        for i, (score, loss, lat, jitter, config, cnt) in enumerate(snapshots): 
+             if i >= max_rows: break
+             
+             # Selection indicator
+             selector = "▶" if is_manual and i == sel_idx else ""
              
              row_style = ""
-             if config == rec_config:
+             if is_manual and i == sel_idx:
+                row_style = "bold reverse cyan"
+             elif config == rec_config:
                 row_style = "bold green"
              elif loss >= 100:
                 row_style = "dim red"
@@ -482,7 +584,8 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                  loss_str = "DEAD" 
             
              table.add_row(
-                f"#{i}", 
+                selector,
+                f"#{i+1}", 
                 f"{score:.1f}", 
                 loss_str, 
                 f"{lat:.0f}ms", 
@@ -498,7 +601,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         if show_qr:
             # Calculate available width for QR (approx 1/3 of screen)
             available_width = console.width // 3 if console.width else 40
-            qr_text, qr_width, status = generate_qr_ascii(rec_config.raw_link, available_width)
+            qr_text, qr_width, status = generate_qr_ascii(display_config.raw_link, available_width)
             
             if status == "success":
                 # QR fits - create panel with fixed styling
@@ -535,11 +638,32 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         else:
             return Group(header_panel, table, footer_panel)
 
+    # Initialize keyboard handler
+    kb = KeyboardHandler()
+    kb_enabled = kb.enable_raw()
+    
     try:
         # Initial Render
-        with Live(generate_dashboard(None, ""), refresh_per_second=4, screen=True, auto_refresh=True) as live:
+        with Live(generate_dashboard(None, "", selected_index, manual_mode), refresh_per_second=4, screen=True, auto_refresh=True) as live:
             while running:
                 elapsed = time.time() - monitor_start_time
+                
+                # --- Keyboard Input Handling ---
+                if kb_enabled:
+                    key = kb.get_key(timeout=0.05)
+                    if key == 'up':
+                        selected_index = max(0, selected_index - 1)
+                        manual_mode = True
+                    elif key == 'down':
+                        max_idx = len(cached_snapshots) - 1 if cached_snapshots else 0
+                        selected_index = min(max_idx, selected_index + 1)
+                        manual_mode = True
+                    elif key == 'esc':
+                        manual_mode = False
+                        selected_index = 0
+                    elif key == 'quit':
+                        running = False
+                        break
                 
                 # --- Verification Logic (Runs every loop but throttled by flow) ---
                 if elapsed >= 60:
@@ -576,7 +700,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                             for cand in candidates:
                                 # Update UI to show we are verifying
                                 verification_status = f"🔍 Verifying: {cand.protocol.upper()} {cand.remarks[:20]}..."
-                                live.update(generate_dashboard(recommended_config, verification_status))
+                                live.update(generate_dashboard(recommended_config, verification_status, selected_index, manual_mode))
                                 
                                 # Verify
                                 is_valid, _ = await XrayVerifier.verify_config(cand)
@@ -593,8 +717,8 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                                  verification_status = f"Top {len(candidates)} configs failed. Trying others..."
 
                 # Update UI
-                live.update(generate_dashboard(recommended_config, verification_status))
-                await asyncio.sleep(0.5) # Refresh rate limit logic
+                live.update(generate_dashboard(recommended_config, verification_status, selected_index, manual_mode))
+                await asyncio.sleep(0.1)  # Faster refresh for responsive keyboard
                 
     except asyncio.CancelledError:
         pass
@@ -602,6 +726,8 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
         pass
     finally:
         running = False
+        kb.restore()  # Restore terminal
         for t in pinger_tasks:
             t.cancel()
         await asyncio.gather(*pinger_tasks, return_exceptions=True)
+

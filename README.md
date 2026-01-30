@@ -73,6 +73,15 @@ Launches a **live dashboard** that continuously monitors all configs with real-t
 stablecheck --mode realtime
 ```
 
+**Keyboard Navigation:**
+| Key | Action |
+|-----|--------|
+| `↑` / `k` | Move selection up |
+| `↓` / `j` | Move selection down |
+| `Esc` | Return to auto-selection mode |
+| `q` | Quit |
+
+
 ### Options
 
 | Flag | Default | Description |
