@@ -21,30 +21,37 @@ Unlike simple ping tools, **Stability Checker** monitors connections over a dura
   - Highlights the **Top 5 Best Configs** at the end of the run.
 - **🛠 CLI Wrapper**: Includes a `stablecheck` script that handles virtual environments automatically.
 
-## 📦 Installation & Setup
+## 📦 Installation
 
-1.  **Clone/Open the project**:
-    ```bash
-    cd /path/to/stable-checker
-    ```
+### Quick Install (Recommended)
 
-2.  **Install Dependencies**:
-    The project includes a wrapper script that manages the environment. First, ensure you have Python 3 installed.
-    
-    If you haven't set up the virtual environment yet:
-    ```bash
-    python3 -m venv venv
-    source venv/bin/activate
-    pip install -r requirements.txt
-    ```
+Install globally with `pipx`:
+```bash
+pipx install git+https://github.com/mmatinjafari/configchecker.git
+```
 
-3.  **Setup Global Command (Optional)**:
-    Add the convenience script to your path or create an alias:
-    ```bash
-    # Add alias to your .zshrc
-    echo "alias stablecheck='$(pwd)/stablecheck'" >> ~/.zshrc
-    source ~/.zshrc
-    ```
+Then run anywhere:
+```bash
+stablecheck --mode realtime
+```
+
+> **Note:** Install pipx first if needed: `brew install pipx && pipx ensurepath` (macOS) or `pip install pipx`
+
+### Manual Install
+
+1. Clone and enter the project:
+   ```bash
+   git clone https://github.com/mmatinjafari/configchecker.git
+   cd configchecker
+   ```
+
+2. Create venv and install:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
 
 ## 🚀 Usage
 
