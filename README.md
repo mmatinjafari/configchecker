@@ -67,7 +67,7 @@ stablecheck --mode quick
 ```
 
 ### 3. Realtime Mode
-Launches a **live dashboard** that continuously monitors all configs with real-time updates, showing stability scores, latencies, and a **QR code** for the best config (for easy mobile import).
+Launches a **live dashboard** using **real delay verification** (via Xray proxy). Monitors the **top 30 configs** with 5-second polling, showing stability scores and a **QR code** for the best config.
 
 ```bash
 stablecheck --mode realtime
@@ -78,6 +78,7 @@ stablecheck --mode realtime
 |-----|--------|
 | `↑` / `k` | Move selection up |
 | `↓` / `j` | Move selection down |
+| `r` | **Rescan all configs** |
 | `Esc` | Return to auto-selection mode |
 | `q` | Quit |
 

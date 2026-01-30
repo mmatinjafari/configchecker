@@ -330,62 +330,47 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
             lat = real_delays.get(cfg.raw_link, 0)
             console.print(f"  {i}. {cfg.remarks[:40]} - [cyan]{lat:.0f}ms[/cyan]")
     
-    console.print("\n[bold cyan]═══ PHASE 2: Stability Monitoring ═══[/bold cyan]\n")
+    console.print("\n[bold cyan]═══ PHASE 2: Real Delay Monitoring ═══[/bold cyan]\n")
     await asyncio.sleep(2)  # Brief pause before Phase 2
     
     # ═══════════════════════════════════════════════════════════════════════
-    # PHASE 2: Stability Monitoring (Only for verified configs)
+    # PHASE 2: Real Delay Monitoring (Top 30 configs only)
     # ═══════════════════════════════════════════════════════════════════════
     
-    stats_map = {c.raw_link: RollingStats(c) for c in verified_configs}
-    # Pre-populate with real delay data
-    for cfg in verified_configs:
+    # Limit to top 30 configs for monitoring
+    MAX_MONITORED = 30
+    monitored_configs = verified_configs[:MAX_MONITORED]
+    console.print(f"[dim]Monitoring top {len(monitored_configs)} configs with real delay checks...[/dim]\n")
+    
+    stats_map = {c.raw_link: RollingStats(c) for c in monitored_configs}
+    # Pre-populate with real delay data from Phase 1
+    for cfg in monitored_configs:
         stats_map[cfg.raw_link].add(True, real_delays.get(cfg.raw_link, 100))
     
-    sem = asyncio.Semaphore(concurrency)
+    sem = asyncio.Semaphore(5)  # Lower concurrency for Xray (resource intensive)
     
     running = True
+    trigger_rescan = False  # Flag to trigger full rescan
 
-    async def pinger(config: ProxyConfig):
+    async def real_delay_pinger(config: ProxyConfig):
+        """Real delay monitoring using Xray verification."""
         stat = stats_map[config.raw_link]
         try:
             while running:
-                # Dead Config Check (10 minutes silence)
-                if time.time() - stat.last_success_time > 600:
-                    await asyncio.sleep(600)
-                
                 try:
-                    # Debug: Log start
-                    with open("debug_pinger.log", "a") as f: f.write(f"checking {config.remarks}\n")
-                    
                     async with sem:
-                        is_up, lat, err = await ProxyChecker.check_tcp_connect(config, timeout=2.0, bind_addr=bind_addr)
+                        is_valid, latency = await XrayVerifier.verify_config(config, timeout=5)
                     
-                    stat.add(is_up, lat)
-                    
-                    # Debug: Log end
-                    failures = sum(1 for up, _ in stat.history if not up)
-                    with open("debug_pinger.log", "a") as f: 
-                        f.write(f"done {config.remarks} up={is_up} err={err} hist={len(stat.history)} fails={failures}\n")
+                    stat.add(is_valid, latency if is_valid else 0)
                     
                 except Exception as e:
-                    # Catch pinger crash
-                    with open("debug_pinger.log", "a") as f: 
-                        f.write(f"CRASH {config.remarks}: {e}\n")
-                await asyncio.sleep(1)
+                    stat.add(False, 0)
+                
+                await asyncio.sleep(5)  # 5-second polling interval
+        except asyncio.CancelledError:
+            pass
 
-                # Adaptive interval: fast warmup, then slow down to prevent port exhaustion
-                sample_count = len(stat.history)
-                if sample_count < 5:
-                    interval = 0.5  # Fast warmup to show data quickly
-                else:
-                    interval = 2.0 + (id(config) % 100) / 100.0  # Slow steady-state
-                await asyncio.sleep(interval) 
-        except Exception as outer_e:
-             with open("debug_pinger.log", "a") as f: 
-                 f.write(f"FATAL PINGER {config.remarks}: {outer_e}\n") 
-
-    pinger_tasks = [asyncio.create_task(pinger(c)) for c in verified_configs]
+    pinger_tasks = [asyncio.create_task(real_delay_pinger(c)) for c in monitored_configs]
     
     monitor_start_time = time.time()
     recommended_config: ProxyConfig = None
@@ -515,7 +500,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
             display_config = rec_config
         
         # Navigation hint
-        nav_hint = "  [dim]↑↓ Navigate | Esc: Auto mode[/dim]" if is_manual else "  [dim]↑↓ to browse configs[/dim]"
+        nav_hint = "  [dim]↑↓ Navigate | r: Rescan | Esc: Auto[/dim]" if is_manual else "  [dim]↑↓ Browse | r: Rescan all[/dim]"
         
         if elapsed < 60:
             footer_content = Text(f"⏳ Analyzing stability... Best config will appear in {60 - int(elapsed)}s", style="dim white")
@@ -689,64 +674,32 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                     elif key == 'esc':
                         manual_mode = False
                         selected_config = None
+                    elif key == 'r' or key == 'R':
+                        # Trigger full rescan (exit to restart Phase 1)
+                        trigger_rescan = True
+                        running = False
+                        break
                     elif key == 'quit':
                         running = False
                         break
                 
-                # --- Verification Logic (Runs every loop but throttled by flow) ---
-                if elapsed >= 60:
-                    current_snapshots = []
-                    for stat in stats_map.values():
-                        current_snapshots.append((*stat.get_score(), stat.config))
-                    current_snapshots.sort(key=lambda x: x[0])
-                    
-                    # Check if we need to switch
-                    keep_current = False
-                    if recommended_config:
-                        rank = next((i for i, s in enumerate(current_snapshots) if s[5] == recommended_config), -1)
-                        if rank != -1 and rank <= 10:
-                            keep_current = True
-                    
-                    # Only run verification if we don't have a working config AND cooldown has passed
-                    current_time = time.time()
-                    if not keep_current and (current_time - last_verification_time) > 10:
-                        last_verification_time = current_time
-                        recommended_config = None 
-                        verification_status = ""
-                        
-                        # Find Top 10 Alive candidates that haven't failed verification
-                        candidates = [s[5] for s in current_snapshots 
-                                     if s[1] < 100 and s[5].raw_link not in failed_verifications][:10]
-                        
-                        if not candidates:
-                            verification_status = "All top configs failed verification. Retrying in 5 min..."
-                            # Clear failed set after 5 minutes to retry
-                            if len(failed_verifications) > 0:
-                                failed_verifications.clear()
-                        else:
-                            found_new = False
-                            for cand in candidates:
-                                # Update UI to show we are verifying
-                                verification_status = f"🔍 Verifying: {cand.protocol.upper()} {cand.remarks[:20]}..."
-                                live.update(generate_dashboard(recommended_config, verification_status, selected_config, manual_mode))
-                                
-                                # Verify
-                                is_valid, _ = await XrayVerifier.verify_config(cand)
-                                if is_valid:
-                                    recommended_config = cand
-                                    verification_status = ""
-                                    found_new = True
-                                    break
-                                else:
-                                    # Mark as failed so we don't retry immediately
-                                    failed_verifications.add(cand.raw_link)
-                            
-                            if not found_new and not recommended_config:
-                                 verification_status = f"Top {len(candidates)} configs failed. Trying others..."
+                # --- Auto-select Best Config (based on real delay rankings) ---
+                current_snapshots = []
+                for stat in stats_map.values():
+                    current_snapshots.append((*stat.get_score(), stat.config))
+                current_snapshots.sort(key=lambda x: x[0])
+                
+                # Auto-select best: top config with low packet loss
+                if not manual_mode and current_snapshots:
+                    best_candidates = [s for s in current_snapshots if s[1] < 50]  # < 50% loss
+                    if best_candidates:
+                        recommended_config = best_candidates[0][4]  # index 4 is config
+                    elif current_snapshots:
+                        recommended_config = current_snapshots[0][4]  # Fallback to top
 
                 # Update UI
                 live.update(generate_dashboard(recommended_config, verification_status, selected_config, manual_mode))
-                await asyncio.sleep(0.1)  # Faster refresh for responsive keyboard
+                await asyncio.sleep(0.2)  # Refresh rate
                 
     except asyncio.CancelledError:
         pass
