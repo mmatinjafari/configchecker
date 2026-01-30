@@ -661,6 +661,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                 if kb_enabled:
                     key = kb.get_key(timeout=0.05)
                     if key == 'up':
+                        manual_mode = True
                         # Move up in cached snapshots
                         if cached_snapshots:
                             # Find current index of selected config
@@ -672,8 +673,8 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                                         break
                             new_idx = max(0, curr_idx - 1)
                             selected_config = cached_snapshots[new_idx][4]
-                        manual_mode = True
                     elif key == 'down':
+                        manual_mode = True
                         # Move down in cached snapshots
                         if cached_snapshots:
                             curr_idx = 0
@@ -685,7 +686,6 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                             max_idx = len(cached_snapshots) - 1
                             new_idx = min(max_idx, curr_idx + 1)
                             selected_config = cached_snapshots[new_idx][4]
-                        manual_mode = True
                     elif key == 'esc':
                         manual_mode = False
                         selected_config = None
