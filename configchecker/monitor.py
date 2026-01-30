@@ -690,12 +690,13 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                 current_snapshots.sort(key=lambda x: x[0])
                 
                 # Auto-select best: top config with low packet loss
+                # Tuple: (score, loss, lat, jitter, count, config) - config is at index 5
                 if not manual_mode and current_snapshots:
                     best_candidates = [s for s in current_snapshots if s[1] < 50]  # < 50% loss
                     if best_candidates:
-                        recommended_config = best_candidates[0][4]  # index 4 is config
+                        recommended_config = best_candidates[0][5]  # index 5 is config
                     elif current_snapshots:
-                        recommended_config = current_snapshots[0][4]  # Fallback to top
+                        recommended_config = current_snapshots[0][5]  # Fallback to top
 
                 # Update UI
                 live.update(generate_dashboard(recommended_config, verification_status, selected_config, manual_mode))
