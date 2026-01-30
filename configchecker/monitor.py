@@ -395,10 +395,11 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
     
     # Navigation state
     selected_index = 0  # Currently selected row in the table
+    selected_config = None  # Track the actual selected config (not just index)
     manual_mode = False  # True when user is manually navigating
     cached_snapshots = []  # Cache snapshots for navigation
 
-    def generate_dashboard(rec_config, verify_status, sel_idx=0, is_manual=False):
+    def generate_dashboard(rec_config, verify_status, sel_config=None, is_manual=False):
         snapshots = []
         
         # DEBUG: Log what we're seeing in stats
@@ -414,6 +415,14 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
             f.write(f"DASHBOARD: total_stats={len(snapshots)} samples={debug_samples}\n")
 
         snapshots.sort(key=lambda x: x[0])
+        
+        # Find the index of the selected config after sorting
+        sel_idx = 0
+        if is_manual and sel_config:
+            for i, (_, _, _, _, config, _) in enumerate(snapshots):
+                if config.raw_link == sel_config.raw_link:
+                    sel_idx = i
+                    break
 
         # --- Network Health Logic ---
         # Warming up configs have score > 900000
@@ -644,7 +653,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
     
     try:
         # Initial Render
-        with Live(generate_dashboard(None, "", selected_index, manual_mode), refresh_per_second=4, screen=True, auto_refresh=True) as live:
+        with Live(generate_dashboard(None, "", selected_config, manual_mode), refresh_per_second=4, screen=True, auto_refresh=True) as live:
             while running:
                 elapsed = time.time() - monitor_start_time
                 
@@ -652,15 +661,34 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                 if kb_enabled:
                     key = kb.get_key(timeout=0.05)
                     if key == 'up':
-                        selected_index = max(0, selected_index - 1)
+                        # Move up in cached snapshots
+                        if cached_snapshots:
+                            # Find current index of selected config
+                            curr_idx = 0
+                            if selected_config:
+                                for i, s in enumerate(cached_snapshots):
+                                    if s[4].raw_link == selected_config.raw_link:
+                                        curr_idx = i
+                                        break
+                            new_idx = max(0, curr_idx - 1)
+                            selected_config = cached_snapshots[new_idx][4]
                         manual_mode = True
                     elif key == 'down':
-                        max_idx = len(cached_snapshots) - 1 if cached_snapshots else 0
-                        selected_index = min(max_idx, selected_index + 1)
+                        # Move down in cached snapshots
+                        if cached_snapshots:
+                            curr_idx = 0
+                            if selected_config:
+                                for i, s in enumerate(cached_snapshots):
+                                    if s[4].raw_link == selected_config.raw_link:
+                                        curr_idx = i
+                                        break
+                            max_idx = len(cached_snapshots) - 1
+                            new_idx = min(max_idx, curr_idx + 1)
+                            selected_config = cached_snapshots[new_idx][4]
                         manual_mode = True
                     elif key == 'esc':
                         manual_mode = False
-                        selected_index = 0
+                        selected_config = None
                     elif key == 'quit':
                         running = False
                         break
@@ -700,7 +728,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                             for cand in candidates:
                                 # Update UI to show we are verifying
                                 verification_status = f"🔍 Verifying: {cand.protocol.upper()} {cand.remarks[:20]}..."
-                                live.update(generate_dashboard(recommended_config, verification_status, selected_index, manual_mode))
+                                live.update(generate_dashboard(recommended_config, verification_status, selected_config, manual_mode))
                                 
                                 # Verify
                                 is_valid, _ = await XrayVerifier.verify_config(cand)
@@ -717,7 +745,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                                  verification_status = f"Top {len(candidates)} configs failed. Trying others..."
 
                 # Update UI
-                live.update(generate_dashboard(recommended_config, verification_status, selected_index, manual_mode))
+                live.update(generate_dashboard(recommended_config, verification_status, selected_config, manual_mode))
                 await asyncio.sleep(0.1)  # Faster refresh for responsive keyboard
                 
     except asyncio.CancelledError:
