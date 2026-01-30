@@ -66,14 +66,23 @@ Performs a single "one-shot" connectivity check on all configs. Good for quickly
 stablecheck --mode quick
 ```
 
+### 3. Realtime Mode
+Launches a **live dashboard** that continuously monitors all configs with real-time updates, showing stability scores, latencies, and a **QR code** for the best config (for easy mobile import).
+
+```bash
+stablecheck --mode realtime
+```
+
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--file` | `configs.txt` | Path to your configuration file containing links. |
-| `--mode` | `quick` | `quick` (one-shot) or `stable` (continuous monitoring). |
-| `--duration` | `30` | Duration of the stability test in seconds. |
-| `--concurrency` | `500` | Number of concurrent checks. Keep high for faster batch processing. |
+| `--mode` | `quick` | `quick` (one-shot), `stable` (duration-based), or `realtime` (live monitor). |
+| `--duration` | `30` | Duration of the stability test in seconds (stable mode only). |
+| `--concurrency` | `50` | Number of concurrent checks. |
+| `--bind-ip` | Auto | Local IP to bind to (useful for bypassing VPN loops). |
+| `--no-bind` | - | Disable auto-detection of local IP binding. |
 
 ## 📋 Input File Format (`configs.txt`)
 The tool expects a file named `configs.txt` in the root directory. Paste your config links line-by-line:
