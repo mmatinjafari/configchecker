@@ -677,8 +677,6 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                                         break
                             new_idx = max(0, curr_idx - 1)
                             selected_config = cached_snapshots[new_idx][4]
-                            with open("debug_nav.log", "a") as f:
-                                f.write(f"UP: manual_mode={manual_mode}, idx={new_idx}, config={selected_config.remarks[:30]}\n")
                     elif key == 'down':
                         manual_mode = True
                         # Move down in cached snapshots
@@ -692,8 +690,6 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                             max_idx = len(cached_snapshots) - 1
                             new_idx = min(max_idx, curr_idx + 1)
                             selected_config = cached_snapshots[new_idx][4]
-                            with open("debug_nav.log", "a") as f:
-                                f.write(f"DOWN: manual_mode={manual_mode}, idx={new_idx}, config={selected_config.remarks[:30]}\n")
                     elif key == 'esc':
                         manual_mode = False
                         selected_config = None
@@ -705,11 +701,6 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                     elif key == 'quit':
                         running = False
                         break
-                
-                # Debug: log state before auto-select
-                with open("debug_nav.log", "a") as f:
-                    sel_name = selected_config.remarks[:20] if selected_config else "None"
-                    f.write(f"LOOP: manual_mode={manual_mode}, selected={sel_name}\n")
                 
                 # --- Auto-select Best Config (based on real delay rankings) ---
                 current_snapshots = []
