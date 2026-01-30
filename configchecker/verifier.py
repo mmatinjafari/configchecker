@@ -7,6 +7,7 @@ import subprocess
 import time
 import zipfile
 import aiohttp
+from rich.console import Console
 from .models import ProxyConfig
 
 class XrayVerifier:
@@ -34,22 +35,33 @@ class XrayVerifier:
     async def ensure_xray():
         if os.path.exists(XrayVerifier.XRAY_PATH):
             return True
-            
-        # Silently download
+        
+        console = Console()
+        
         try:
             os.makedirs(XrayVerifier.BIN_DIR, exist_ok=True)
             url = XrayVerifier._get_platform_url()
             
             if not url:
+                console.print("[red]❌ Unsupported platform for Xray[/red]")
                 return False
-                
+            
+            console.print("[cyan]📥 Downloading Xray core (first run only)...[/cyan]")
+            
             zip_path = os.path.join(XrayVerifier.BIN_DIR, "xray.zip")
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
+                        total = int(resp.headers.get('content-length', 0))
+                        data = await resp.read()
                         with open(zip_path, 'wb') as f:
-                            f.write(await resp.read())
-                            
+                            f.write(data)
+                        console.print(f"[green]✓ Downloaded {len(data) // 1024 // 1024}MB[/green]")
+                    else:
+                        console.print(f"[red]❌ Download failed: HTTP {resp.status}[/red]")
+                        return False
+            
+            console.print("[cyan]📦 Extracting...[/cyan]")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(XrayVerifier.BIN_DIR)
             
@@ -57,8 +69,11 @@ class XrayVerifier:
             # Cleanup
             if os.path.exists(zip_path):
                 os.remove(zip_path)
+            
+            console.print("[green]✓ Xray ready![/green]\n")
             return True
-        except Exception:
+        except Exception as e:
+            console.print(f"[red]❌ Failed to setup Xray: {e}[/red]")
             return False
 
     @staticmethod
