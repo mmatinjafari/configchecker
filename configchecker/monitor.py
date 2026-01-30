@@ -51,7 +51,7 @@ class KeyboardHandler:
     def get_key(self, timeout=0.05):
         """
         Non-blocking key read.
-        Returns: 'up', 'down', 'esc', 'enter', or None
+        Returns: 'up', 'down', 'esc', 'enter', 'rescan', 'quit', or None
         """
         if not self.enabled or not HAS_TERMIOS:
             return None
@@ -61,10 +61,10 @@ class KeyboardHandler:
                 
                 if ch == '\x1b':  # Escape sequence
                     # Read more characters for arrow keys
-                    if select.select([sys.stdin], [], [], 0.01)[0]:
+                    if select.select([sys.stdin], [], [], 0.02)[0]:
                         ch2 = sys.stdin.read(1)
                         if ch2 == '[':
-                            if select.select([sys.stdin], [], [], 0.01)[0]:
+                            if select.select([sys.stdin], [], [], 0.02)[0]:
                                 ch3 = sys.stdin.read(1)
                                 if ch3 == 'A':
                                     return 'up'
@@ -76,6 +76,8 @@ class KeyboardHandler:
                     return 'up'
                 elif ch == 'j' or ch == 'J':
                     return 'down'
+                elif ch == 'r' or ch == 'R':
+                    return 'rescan'
                 elif ch == '\r' or ch == '\n':
                     return 'enter'
                 elif ch == 'q' or ch == 'Q':
@@ -674,7 +676,7 @@ async def start_monitor(configs: List[ProxyConfig], concurrency: int = 50, bind_
                     elif key == 'esc':
                         manual_mode = False
                         selected_config = None
-                    elif key == 'r' or key == 'R':
+                    elif key == 'rescan':
                         # Trigger full rescan (exit to restart Phase 1)
                         trigger_rescan = True
                         running = False
